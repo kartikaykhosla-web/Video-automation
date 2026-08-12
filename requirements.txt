@@ -1,0 +1,11 @@
+streamlit
+requests
+google-auth
+Pillow
+faster-whisper
+librosa
+numpy
+onnxruntime
+huggingface-hub
+soundfile
+

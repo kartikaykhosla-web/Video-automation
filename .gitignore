@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv*/
+.streamlit/secrets.toml
+service_account*.json
+partner_video_repackager_work/
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.mkv
+*.wav
+*.mp3
+*.safetensors
+*.ckpt
+

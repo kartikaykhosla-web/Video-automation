@@ -542,6 +542,20 @@ def vertex_service_account_path() -> Optional[Path]:
     return next((path for path in VERTEX_SERVICE_ACCOUNT_CANDIDATES if path.is_file()), None)
 
 
+def vertex_service_account_info() -> Optional[Dict[str, object]]:
+    """Load Vertex credentials from Streamlit Secrets or a local ignored JSON file."""
+    try:
+        secret_info = st.secrets.get("vertex_service_account")
+        if secret_info:
+            return dict(secret_info)
+    except Exception:
+        pass
+    credential_path = vertex_service_account_path()
+    if credential_path:
+        return json.loads(credential_path.read_text(encoding="utf-8"))
+    return None
+
+
 def visual_context_parts(
     source_path: Path,
     header_path: Optional[Path],
@@ -634,11 +648,13 @@ def generate_video_metadata_with_gemini(
     header_path: Optional[Path],
     floating_items: List[Dict[str, object]],
 ) -> Tuple[Optional[Dict[str, object]], str]:
-    credential_path = vertex_service_account_path()
-    if not credential_path:
-        return None, "Vertex service-account file was not found."
+    account_info = vertex_service_account_info()
+    if not account_info:
+        return None, (
+            "Vertex credentials were not found. Configure [vertex_service_account] "
+            "in Streamlit Secrets or add the local ignored service-account JSON file."
+        )
     try:
-        account_info = json.loads(credential_path.read_text(encoding="utf-8"))
         project_id = str(account_info.get("project_id") or "").strip()
         credentials = service_account.Credentials.from_service_account_info(
             account_info,
@@ -3286,7 +3302,7 @@ def render_workspace_header() -> None:
                 </div>
                 <div class="studio-session-status">
                     <span class="studio-status-dot"></span>
-                    Local workspace
+                    Session workspace
                 </div>
             </div>
             <div class="studio-progress" aria-label="Production progress">

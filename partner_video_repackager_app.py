@@ -2056,11 +2056,18 @@ def _overlay_font(text: str, size: int):
     devanagari = bool(re.search(r"[\u0900-\u097f]", text))
     candidates = (
         [
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Bold.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf",
             "/System/Library/Fonts/Kohinoor.ttc",
             "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         ]
         if devanagari
         else [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
             "/System/Library/Fonts/Supplemental/Arial.ttf",
         ]
@@ -2191,7 +2198,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "highlight_color": highlight_color,
             "region": region,
             "geometry": geometry,
-            "design_version": 5,
+            "design_version": 6,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -5695,7 +5702,27 @@ def main() -> None:
                     "in the list will appear on top."
                 )
                 break
-    
+
+        st.divider()
+        if st.button(
+            "Continue to Review & Export →",
+            type="primary",
+            use_container_width=True,
+            key="partner_continue_to_review",
+        ):
+            components.html(
+                """
+                <script>
+                const tabs = window.parent.document.querySelectorAll('[role="tab"]');
+                const reviewTab = Array.from(tabs).find(
+                    (tab) => tab.textContent.trim() === 'Review & export'
+                );
+                if (reviewTab) reviewTab.click();
+                </script>
+                """,
+                height=0,
+            )
+
     with workspace_tabs[3]:
         render_stage_header(
             6,

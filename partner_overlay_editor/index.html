@@ -75,6 +75,9 @@
     .inspector-field input { width:100%; color:#fff; background:#242934; border:1px solid #444b58; border-radius:6px; padding:6px; }
     .inspector-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:10px; }
     .inspector-actions button { padding:6px; font-size:11px; }
+    .layer-order-title { margin-top:14px; color:#b7beca; font-size:10px; font-weight:850; letter-spacing:.08em; }
+    .layer-order-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:7px; }
+    .layer-order-actions button { padding:6px 4px; font-size:10px; }
     .guide { position:absolute; z-index:999; pointer-events:none; background:#37d5ff; display:none; }
     .guide.v { top:0; bottom:0; width:1px; } .guide.h { left:0; right:0; height:1px; }
     @media (max-width: 900px) { .editor-workspace { grid-template-columns: 150px minmax(0,1fr); } .inspector { grid-column:1 / -1; min-height:0; } }
@@ -155,6 +158,13 @@
         <div class="inspector-field"><label>HEIGHT %</label><input id="inspectH" type="number" min="8" max="100" step="0.1"></div>
       </div>
       <div class="inspector-actions"><button id="alignLeft">Left</button><button id="alignCenter">Center</button><button id="alignTop">Top</button><button id="alignMiddle">Middle</button><button id="fillWidth">Fill width</button><button id="fillHeight">Fill height</button></div>
+      <div class="layer-order-title">LAYER ORDER</div>
+      <div class="layer-order-actions">
+        <button id="bringForward">Bring forward</button>
+        <button id="bringFront">Bring to front</button>
+        <button id="sendBackward">Send backward</button>
+        <button id="sendBack">Send to back</button>
+      </div>
       <p class="hint">Arrow keys move 1px-equivalent. Hold Shift for larger steps.</p>
     </aside>
   </div>
@@ -301,6 +311,7 @@
 
     function renderInspector() {
       const item=current(); [inspectX,inspectY,inspectW,inspectH].forEach(input=>input.disabled=!item);
+      ["bringForward","bringFront","sendBackward","sendBack"].forEach(id=>document.getElementById(id).disabled=!item);
       if(!item) return;
       inspectX.value=(item.x*100).toFixed(1); inspectY.value=(item.y*100).toFixed(1);
       inspectW.value=(item.w*100).toFixed(1); inspectH.value=(item.h*100).toFixed(1);
@@ -370,7 +381,6 @@
     function beginSpatial(event, item, mode) {
       event.preventDefault(); selectedId = String(item.id); if(item.locked){renderAll();return;} remember();
       const rect = stage.getBoundingClientRect();
-      item.z = Math.max(...layout.map(value => value.z), 0) + 1;
       spatialAction = {item, mode, pointerId:event.pointerId, tile:event.currentTarget, startX:event.clientX, startY:event.clientY,
         x:item.x, y:item.y, w:item.w, h:item.h, stageW:rect.width, stageH:rect.height};
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -440,6 +450,25 @@
     document.getElementById("alignMiddle").onclick=()=>applyAlign(i=>i.y=(1-i.h)/2);
     document.getElementById("fillWidth").onclick=()=>applyAlign(i=>{i.x=0;i.w=1});
     document.getElementById("fillHeight").onclick=()=>applyAlign(i=>{i.y=0;i.h=1});
+    function reorderLayer(mode) {
+      const item=current(); if(!item||item.locked)return;
+      remember();
+      const ordered=[...layout].sort((a,b)=>a.z-b.z);
+      const index=ordered.findIndex(value=>String(value.id)===String(item.id));
+      if(index<0)return;
+      let target=index;
+      if(mode==="forward") target=Math.min(ordered.length-1,index+1);
+      if(mode==="front") target=ordered.length-1;
+      if(mode==="backward") target=Math.max(0,index-1);
+      if(mode==="back") target=0;
+      ordered.splice(index,1); ordered.splice(target,0,item);
+      ordered.forEach((value,zIndex)=>value.z=zIndex+1);
+      renderAll(); commit();
+    }
+    document.getElementById("bringForward").onclick=()=>reorderLayer("forward");
+    document.getElementById("bringFront").onclick=()=>reorderLayer("front");
+    document.getElementById("sendBackward").onclick=()=>reorderLayer("backward");
+    document.getElementById("sendBack").onclick=()=>reorderLayer("back");
     document.getElementById("undo").onclick=()=>{if(!history.length)return;future.push(snapshot());restore(history.pop());};
     document.getElementById("redo").onclick=()=>{if(!future.length)return;history.push(snapshot());restore(future.pop());};
     function setZoom(value){zoom=clamp(value,.5,1.75);canvasFrame.style.width=`${zoom*100}%`;document.getElementById("zoomLabel").textContent=`${Math.round(zoom*100)}%`;setHeight();}

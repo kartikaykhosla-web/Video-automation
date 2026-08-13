@@ -2745,6 +2745,7 @@ def export_horizontal_video(
                     "y": float(item.get("y") or 0.0),
                     "w": float(item.get("w") or 1.0),
                     "h": float(item.get("h") or 1.0),
+                    "z": int(item.get("z") or 0),
                 }
             )
             if bool(item.get("use_clip_audio")) and media_has_audio(
@@ -2768,6 +2769,7 @@ def export_horizontal_video(
                     "input": next_input_index,
                     "start": start,
                     "end": end,
+                    "z": int(item.get("z") or 0),
                 }
             )
         next_input_index += 1
@@ -2786,9 +2788,12 @@ def export_horizontal_video(
                 "input": next_input_index,
                 "start": start,
                 "end": end,
+                "z": int(slug.get("z") or 0),
             }
         )
         next_input_index += 1
+
+    visual_inputs.sort(key=lambda visual: int(visual.get("z") or 0))
 
     filter_parts: List[str] = []
     full_source_kept = (
@@ -5386,7 +5391,7 @@ def main() -> None:
         )
         template_geometry = {
             str(item.get("id")): {
-                key: float(item.get(key) or 0.0) for key in ("x", "y", "w", "h")
+                key: float(item.get(key) or 0.0) for key in ("x", "y", "w", "h", "z")
             }
             for item in stored_canvas_layout
             if isinstance(item, dict) and item.get("id")
@@ -5406,7 +5411,7 @@ def main() -> None:
                     "y": float(header_image_geometry.get("y", 0.01)),
                     "w": float(header_image_geometry.get("w", 0.20)),
                     "h": float(header_image_geometry.get("h", 0.18)),
-                    "z": 900,
+                    "z": int(header_image_geometry.get("z", 3)),
                 }
             )
         template_loop_items_for_export = [
@@ -5449,7 +5454,7 @@ def main() -> None:
                             "y": float(image_geometry.get("y", 0.20)),
                             "w": float(image_geometry.get("w", 0.50)),
                             "h": float(image_geometry.get("h", 0.80)),
-                            "z": 800 + panel_index,
+                            "z": int(image_geometry.get("z", 1)),
                         }
                     )
                     panel_time += visible_duration
@@ -5469,7 +5474,7 @@ def main() -> None:
                     "y": float(logo_geometry.get("y", 0.035)),
                     "w": float(logo_geometry.get("w", 0.13)),
                     "h": float(logo_geometry.get("h", 0.11)),
-                    "z": 950,
+                    "z": int(logo_geometry.get("z", 5)),
                     "fit_mode": "contain_transparent",
                 }
             )
@@ -5679,6 +5684,7 @@ def main() -> None:
                     slug["geometry"] = template_geometry.get(
                         "slug", {"x": 0.22, "y": 0.01, "w": 0.77, "h": 0.18}
                     )
+                    slug["z"] = int(slug["geometry"].get("z", 3))
                     slugs_for_export.append(dict(slug))
                     try:
                         slug_preview_path = build_slug_overlay_asset(slug, source_path)

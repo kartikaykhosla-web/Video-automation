@@ -2206,7 +2206,14 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     digest = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:16]
     output = OVERLAY_DIR / f"{source.stem}_slug_layer_{digest}.png"
     if output.exists():
-        return output
+        try:
+            with Image.open(output) as cached_image:
+                cached_image.verify()
+            return output
+        except Exception:
+            # A Streamlit rerun may previously have observed a partially written
+            # cache file. Discard it and render a complete replacement.
+            output.unlink(missing_ok=True)
 
     canvas = Image.new("RGBA", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
     if region == "template_header":
@@ -2372,7 +2379,14 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
                 draw.text((x, y), word, font=font, fill=text_color)
             x += word_width
         y += line_height + line_gap
-    canvas.save(output)
+    temporary_output = output.with_name(
+        f".{output.stem}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+    try:
+        canvas.save(temporary_output, format="PNG")
+        os.replace(temporary_output, output)
+    finally:
+        temporary_output.unlink(missing_ok=True)
     return output
 
 
@@ -5666,14 +5680,21 @@ def main() -> None:
                         "slug", {"x": 0.22, "y": 0.01, "w": 0.77, "h": 0.18}
                     )
                     slugs_for_export.append(dict(slug))
-                    slug_preview_path = build_slug_overlay_asset(slug, source_path)
-                    with Image.open(slug_preview_path) as slug_preview:
-                        st.image(
-                            slug_preview.crop(
+                    try:
+                        slug_preview_path = build_slug_overlay_asset(slug, source_path)
+                        with Image.open(slug_preview_path) as slug_preview:
+                            preview_crop = slug_preview.crop(
                                 (0, 0, OUTPUT_WIDTH, int(OUTPUT_HEIGHT * 0.20))
-                            ),
+                            ).copy()
+                        st.image(
+                            preview_crop,
                             caption=f"Preview · {timing_label}",
                             use_container_width=True,
+                        )
+                    except Exception as exc:
+                        st.warning(
+                            "The slug preview could not be displayed. Change the slug "
+                            f"text to retry. Details: {exc}"
                         )
                 else:
                     st.warning("Enter text for this slug or remove it.")

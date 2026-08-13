@@ -5798,27 +5798,27 @@ def main() -> None:
             st.error(metadata_message)
         if st.session_state.get("partner_metadata_message"):
             st.success(st.session_state["partner_metadata_message"])
-        generated_title = st.text_input(
+        title_column, headline_column = st.columns(2)
+        generated_title = title_column.text_input(
             "Video title",
             key="partner_generated_title",
             placeholder="Generate or enter the publishing title",
         )
-        generated_headline = st.text_area(
+        generated_headline = headline_column.text_input(
             "Headline",
             key="partner_generated_headline",
-            height=90,
             placeholder="Generate or enter the newsroom headline",
         )
         generated_description = st.text_area(
             "Description",
             key="partner_generated_description",
-            height=180,
+            height=110,
             placeholder="Generate or enter the publishing description",
         )
         generated_meta_tags = st.text_area(
             "Keywords / meta tags — comma separated",
             key="partner_generated_meta_tags",
-            height=120,
+            height=80,
             placeholder="tag one, tag two, tag three",
         )
         parsed_meta_tags = [

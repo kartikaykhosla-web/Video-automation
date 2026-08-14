@@ -112,8 +112,12 @@
     .field input:focus { border-color: #ff4b4b; }
     body.spatial-only .toolbar button[data-cols], body.spatial-only #fullFrame,
     body.spatial-only #sequence, body.spatial-only #together,
-    body.spatial-only #deleteImage, body.spatial-only .fields,
+    body.spatial-only .fields,
     body.spatial-only .timeline { display: none; }
+    body.no-delete #deleteImage { display: none; }
+    body.freehand-only .toolbar button[data-cols], body.freehand-only #fullFrame,
+    body.freehand-only #resetLayout, body.freehand-only #sequence,
+    body.freehand-only #together { display: none; }
     body.spatial-only .timing-card { padding: 9px 12px; }
     body.spatial-only .selected-help::after { content: " Drag on the canvas and resize from the lower-right corner."; }
     .timeline { margin-top: 12px; }
@@ -334,7 +338,7 @@
         Object.assign(tile.style, {left:`${item.x*100}%`, top:`${item.y*100}%`, width:`${item.w*100}%`, height:`${item.h*100}%`, zIndex:item.z});
         tile.innerHTML = `<img class="blur" draggable="false" src="${image.src}"><img class="sharp" draggable="false" src="${image.src}"><span class="tile-name"></span><span class="media-kind"></span><span class="resize n" data-resize="n"></span><span class="resize ne" data-resize="ne"></span><span class="resize e" data-resize="e"></span><span class="resize se" data-resize="se"></span><span class="resize s" data-resize="s"></span><span class="resize sw" data-resize="sw"></span><span class="resize w" data-resize="w"></span><span class="resize nw" data-resize="nw"></span>`;
         tile.querySelector(".tile-name").textContent = image.name || `Image ${item.id}`;
-        const kind = image.kind === "video" ? "VIDEO" : "IMAGE";
+        const kind = image.kind === "video" ? "VIDEO" : image.kind === "slug" ? "SLUG" : "IMAGE";
         tile.querySelector(".media-kind").textContent = kind;
         tile.addEventListener("pointerdown", event => beginSpatial(event, item, event.target.dataset.resize || "move"));
         stage.appendChild(tile);
@@ -495,7 +499,7 @@
       layout.forEach(item=>{item.start=start;item.duration=Math.min(duration,videoDuration()-start);}); renderAll(); commit();
     });
     document.getElementById("deleteImage").addEventListener("click", () => {
-      if(selectedId==null) return; const deleted=String(selectedId);
+      if(selectedId==null || args.allow_delete === false) return; const deleted=String(selectedId);
       layout=layout.filter(item=>String(item.id)!==deleted); args.images=args.images.filter(image=>String(image.id)!==deleted);
       selectedId=args.images[0]?.id??null; renderAll(); commit([deleted]);
     });
@@ -503,9 +507,13 @@
     window.addEventListener("message", event => {
       if(event.data?.type!=="streamlit:render") return;
       const nextArgs=event.data.args||args;
-      const nextSignature=(nextArgs.images||[]).map(image=>`${image.id}:${image.src?.length||0}`).join("|");
+      // Image previews change as text or colours are edited. Identity—not preview
+      // byte size—must control layout resets so freehand geometry is preserved.
+      const nextSignature=(nextArgs.images||[]).map(image=>`${image.id}:${image.kind||"image"}`).join("|");
       args=nextArgs;
       document.body.classList.toggle("spatial-only", Boolean(args.spatial_only));
+      document.body.classList.toggle("freehand-only", Boolean(args.freehand_only));
+      document.body.classList.toggle("no-delete", args.allow_delete === false);
       if(nextSignature!==assetSignature) {
         layout=normaliseIncoming(args.images||[],args.layout||[]);
         assetSignature=nextSignature;

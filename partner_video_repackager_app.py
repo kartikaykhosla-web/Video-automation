@@ -450,6 +450,24 @@ def image_preview_data_url(path_value: str, modified_ns: int) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+@st.cache_data(show_spinner=False)
+def transparent_overlay_preview_data_url(path_value: str, modified_ns: int) -> str:
+    """Return a tightly cropped preview for a transparent full-frame overlay."""
+    del modified_ns
+    from PIL import Image
+
+    with Image.open(path_value) as original:
+        image = original.convert("RGBA")
+        alpha_bounds = image.getchannel("A").getbbox()
+        if alpha_bounds:
+            image = image.crop(alpha_bounds)
+        image.thumbnail((1200, 500), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG", optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
 def property_logo_path(property_name: str) -> Optional[Path]:
     filename = PROPERTY_LOGO_FILES.get(property_name)
     if not filename:
@@ -2198,7 +2216,8 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "highlight_color": highlight_color,
             "region": region,
             "geometry": geometry,
-            "design_version": 6,
+            "font_size": int(slug.get("font_size") or 52),
+            "design_version": 7,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -2327,14 +2346,17 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             current_width += addition
         return font_value, lines
 
-    font_size = 52
+    requested_font_size = int(
+        clamp_float(float(slug.get("font_size") or 52), 18.0, 112.0)
+    )
+    font_size = requested_font_size
     font, lines = wrapped_words(font_size)
     sample_bbox = draw.textbbox((0, 0), text or "Ag", font=font)
     line_height = sample_bbox[3] - sample_bbox[1]
     line_gap = 13
     block_height = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
     available_text_height = max(40, bottom - text_top - 12)
-    while font_size > 30 and (
+    while font_size > 18 and (
         len(lines) > 2 or block_height > available_text_height
     ):
         font_size -= 2
@@ -4651,7 +4673,6 @@ def main() -> None:
         template_loop_paths_for_editor = [Path(str(item["path"])) for item in template_loop_items]
         default_canvas_layout = [
             {"id": "header_image", "x": 0.01, "y": 0.01, "w": 0.20, "h": 0.18, "z": 3, "start": 0.0, "duration": editor_video_duration},
-            {"id": "slug", "x": 0.22, "y": 0.01, "w": 0.77, "h": 0.18, "z": 3, "start": 0.0, "duration": editor_video_duration},
             {"id": "source", "x": 0.0, "y": 0.20, "w": 0.50, "h": 0.80, "z": 1, "start": 0.0, "duration": editor_video_duration},
             {"id": "images", "x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80, "z": 1, "start": 0.0, "duration": editor_video_duration},
         ]
@@ -4666,18 +4687,7 @@ def main() -> None:
         for default_item in default_canvas_layout:
             if default_item["id"] not in current_canvas_ids:
                 current_canvas_layout.append(default_item)
-        preview_header_slug = {
-            "text": "Slug / headline preview",
-            "style": "Jagran Red",
-            "region": "template_header",
-            "geometry": next(
-                (item for item in current_canvas_layout if item.get("id") == "slug"),
-                default_canvas_layout[1],
-            ),
-        }
-        preview_header_asset = build_slug_overlay_asset(preview_header_slug, source_path)
         canvas_images = [
-            {"id": "slug", "name": "Slug banner", "kind": "image", "src": image_preview_data_url(str(preview_header_asset), preview_header_asset.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
             {"id": "source", "name": "Raw video", "kind": "video", "src": video_preview_data_url(str(source_path), source_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
         ]
         if template_header_path_for_editor.is_file():
@@ -5504,6 +5514,7 @@ def main() -> None:
                             st.session_state.get("partner_slug_highlight_colour")
                             or "#F6D35D"
                         ),
+                        "font_size": 52,
                         "start": float(
                             st.session_state.get("partner_slug_start") or 0.0
                         ),
@@ -5551,16 +5562,25 @@ def main() -> None:
                     "background_color": SLUG_STYLE_PRESETS["Jagran Red"]["background"],
                     "background_end_color": SLUG_STYLE_PRESETS["Jagran Red"]["background_end"],
                     "highlight_color": SLUG_STYLE_PRESETS["Jagran Red"]["accent"],
+                    "font_size": 52,
                     "start": default_start,
                     "duration": default_duration,
+                    "geometry": {
+                        "x": 0.22,
+                        "y": 0.03,
+                        "w": 0.74,
+                        "h": 0.16,
+                        "z": len(slug_items) + 10,
+                    },
                 }
             )
             st.session_state["partner_slug_overlays"] = slug_items
             st.rerun()
     
         slugs_for_export: List[Dict[str, object]] = []
+        slug_editor_images: List[Dict[str, object]] = []
+        slug_editor_layout: List[Dict[str, object]] = []
         remove_slug_id: Optional[str] = None
-        from PIL import Image
     
         for slug_index, slug in enumerate(slug_items):
             slug_id = str(slug["id"])
@@ -5602,11 +5622,23 @@ def main() -> None:
                     key=f"partner_slug_label_{slug_id}",
                     placeholder="NEWS UPDATE",
                 )
-                slug_text = st.text_input(
+                text_columns = st.columns([0.72, 0.28], vertical_alignment="bottom")
+                slug_text = text_columns[0].text_input(
                     "Slug text",
                     value=str(slug.get("text") or ""),
                     key=f"partner_slug_text_{slug_id}",
                     placeholder="Enter the headline or label to display",
+                )
+                slug_font_size = text_columns[1].number_input(
+                    "Text size",
+                    min_value=18,
+                    max_value=112,
+                    value=int(
+                        clamp_float(float(slug.get("font_size") or 52), 18, 112)
+                    ),
+                    step=2,
+                    key=f"partner_slug_font_size_{slug_id}",
+                    help="Controls this slug's headline font size.",
                 )
                 slug_highlight = st.text_input(
                     "Text to highlight (optional)",
@@ -5675,27 +5707,49 @@ def main() -> None:
                         "background_color": slug_background,
                         "background_end_color": slug_background_end,
                         "highlight_color": slug_highlight_colour,
+                        "font_size": int(slug_font_size),
                         "start": float(slug_start),
                         "duration": float(slug_duration),
                     }
                 )
                 if slug_text.strip():
                     slug["region"] = "template_header"
-                    slug["geometry"] = template_geometry.get(
-                        "slug", {"x": 0.22, "y": 0.01, "w": 0.77, "h": 0.18}
+                    existing_geometry = (
+                        slug.get("geometry")
+                        if isinstance(slug.get("geometry"), dict)
+                        else {}
                     )
+                    slug["geometry"] = {
+                        "x": float(existing_geometry.get("x", 0.22)),
+                        "y": float(existing_geometry.get("y", 0.03)),
+                        "w": float(existing_geometry.get("w", 0.74)),
+                        "h": float(existing_geometry.get("h", 0.16)),
+                        "z": int(existing_geometry.get("z", slug_index + 10)),
+                    }
                     slug["z"] = int(slug["geometry"].get("z", 3))
                     slugs_for_export.append(dict(slug))
                     try:
                         slug_preview_path = build_slug_overlay_asset(slug, source_path)
-                        with Image.open(slug_preview_path) as slug_preview:
-                            preview_crop = slug_preview.crop(
-                                (0, 0, OUTPUT_WIDTH, int(OUTPUT_HEIGHT * 0.20))
-                            ).copy()
-                        st.image(
-                            preview_crop,
-                            caption=f"Preview · {timing_label}",
-                            use_container_width=True,
+                        slug_editor_images.append(
+                            {
+                                "id": slug_id,
+                                "name": slug_label,
+                                "kind": "slug",
+                                "src": transparent_overlay_preview_data_url(
+                                    str(slug_preview_path),
+                                    slug_preview_path.stat().st_mtime_ns,
+                                ),
+                                "start": float(slug_start),
+                                "duration": float(slug_duration),
+                            }
+                        )
+                        slug_editor_layout.append(
+                            {
+                                "id": slug_id,
+                                **slug["geometry"],
+                                "start": float(slug_start),
+                                "duration": float(slug_duration),
+                            }
                         )
                     except Exception as exc:
                         st.warning(
@@ -5716,6 +5770,76 @@ def main() -> None:
             ]
             st.rerun()
         st.session_state["partner_slug_overlays"] = slug_items
+
+        if slug_editor_images:
+            st.markdown("**Slug component editor**")
+            st.caption(
+                "Every slug is a separate component. Select one, drag it anywhere, "
+                "resize it from any edge or corner, adjust its timing, or remove it. "
+                "The editor never auto-arranges or auto-resizes slug components."
+            )
+            slug_editor_result = overlay_layout_editor(
+                images=slug_editor_images,
+                layout=slug_editor_layout,
+                background=video_preview_data_url(
+                    str(source_path), source_path.stat().st_mtime_ns
+                ),
+                video_duration=editor_video_duration,
+                freehand_only=True,
+                allow_delete=True,
+                default={"items": slug_editor_layout},
+                key=(
+                    "partner_slug_component_editor_"
+                    f"{st.session_state.get('partner_video_signature', source_path.name)}"
+                ),
+            )
+            if isinstance(slug_editor_result, dict):
+                deleted_slug_ids = {
+                    str(value)
+                    for value in slug_editor_result.get("deleted_ids", [])
+                }
+                if deleted_slug_ids:
+                    st.session_state["partner_slug_overlays"] = [
+                        item
+                        for item in slug_items
+                        if str(item.get("id")) not in deleted_slug_ids
+                    ]
+                    st.rerun()
+                slug_layout_by_id = {
+                    str(entry.get("id")): entry
+                    for entry in slug_editor_result.get("items", [])
+                    if isinstance(entry, dict)
+                }
+                for slug in slug_items:
+                    updated = slug_layout_by_id.get(str(slug.get("id")))
+                    if not updated:
+                        continue
+                    slug["geometry"] = {
+                        "x": clamp_float(float(updated.get("x") or 0.0), 0.0, 0.96),
+                        "y": clamp_float(float(updated.get("y") or 0.0), 0.0, 0.96),
+                        "w": clamp_float(float(updated.get("w") or 0.74), 0.08, 1.0),
+                        "h": clamp_float(float(updated.get("h") or 0.16), 0.08, 1.0),
+                        "z": int(updated.get("z") or 10),
+                    }
+                    slug["start"] = clamp_float(
+                        float(updated.get("start") or 0.0),
+                        0.0,
+                        max(0.0, editor_video_duration - 0.1),
+                    )
+                    slug["duration"] = clamp_float(
+                        float(updated.get("duration") or 5.0),
+                        0.1,
+                        max(0.1, editor_video_duration - float(slug["start"])),
+                    )
+                st.session_state["partner_slug_overlays"] = slug_items
+
+        # Use the editor-updated geometry/timing in the export created during
+        # this same Streamlit run; do not wait for another interaction/rerun.
+        slugs_for_export = [
+            dict(item)
+            for item in slug_items
+            if str(item.get("text") or "").strip()
+        ]
     
         ordered_slugs = sorted(
             slugs_for_export,

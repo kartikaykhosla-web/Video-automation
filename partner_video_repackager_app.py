@@ -3,6 +3,7 @@ import json
 import hashlib
 from io import BytesIO
 import math
+import mimetypes
 import os
 import platform
 import re
@@ -38,6 +39,7 @@ REFERENCE_DIR = WORK_DIR / "reference"
 OVERLAY_DIR = WORK_DIR / "overlays"
 OVERLAY_EDITOR_DIR = APP_DIR / "partner_overlay_editor"
 PROPERTY_LOGO_DIR = APP_DIR / "partner_property_logos"
+PUBLISHER_FONT_DIR = APP_DIR / "partner_fonts"
 VERTEX_SERVICE_ACCOUNT_CANDIDATES = (
     APP_DIR.parent / "service_account_vertex.json",
     APP_DIR / "service_account_vertex.json",
@@ -148,6 +150,45 @@ DEFAULT_DELIVERY_PROFILE: Dict[str, object] = {
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
 
+# A deliberately limited newsroom set: 15 Devanagari-first families for Hindi
+# publishing and 15 editorial/headline families for English publishing. Files
+# are bundled so the canvas preview and Cloud Run export cannot diverge due to
+# host-specific font availability.
+PUBLISHER_SLUG_FONTS: Dict[str, Dict[str, str]] = {
+    "Hindi · Noto Sans Devanagari Bold": {"file": "NotoSansDevanagari.ttf", "variation": "Bold"},
+    "Hindi · Noto Serif Devanagari Bold": {"file": "NotoSerifDevanagari.ttf", "variation": "Bold"},
+    "Hindi · Mukta ExtraBold": {"file": "Mukta-ExtraBold.ttf"},
+    "Hindi · Teko Bold": {"file": "Teko.ttf", "variation": "Bold"},
+    "Hindi · Yantramanav Bold": {"file": "Yantramanav-Bold.ttf"},
+    "Hindi · Baloo 2 ExtraBold": {"file": "Baloo2.ttf", "variation": "ExtraBold"},
+    "Hindi · Hind Bold": {"file": "Hind-Bold.ttf"},
+    "Hindi · Khand Bold": {"file": "Khand-Bold.ttf"},
+    "Hindi · Rajdhani Bold": {"file": "Rajdhani-Bold.ttf"},
+    "Hindi · Martel Bold": {"file": "Martel-Bold.ttf"},
+    "Hindi · Karma Bold": {"file": "Karma-Bold.ttf"},
+    "Hindi · Rozha One": {"file": "RozhaOne-Regular.ttf"},
+    "Hindi · Arya Bold": {"file": "Arya-Bold.ttf"},
+    "Hindi · Kurale": {"file": "Kurale-Regular.ttf"},
+    "Hindi · Glegoo Bold": {"file": "Glegoo-Bold.ttf"},
+    "English · Roboto Condensed Bold": {"file": "RobotoCondensed.ttf", "variation": "Bold"},
+    "English · Oswald SemiBold": {"file": "Oswald.ttf", "variation": "SemiBold"},
+    "English · Source Sans 3 Bold": {"file": "SourceSans3.ttf", "variation": "Bold"},
+    "English · Merriweather Bold": {"file": "Merriweather.ttf", "variation": "Bold"},
+    "English · Playfair Display Bold": {"file": "PlayfairDisplay.ttf", "variation": "Bold"},
+    "English · Libre Franklin Bold": {"file": "LibreFranklin.ttf", "variation": "Bold"},
+    "English · Barlow Condensed Bold": {"file": "BarlowCondensed-Bold.ttf"},
+    "English · Montserrat ExtraBold": {"file": "Montserrat.ttf", "variation": "ExtraBold"},
+    "English · Lato Bold": {"file": "Lato-Bold.ttf"},
+    "English · PT Sans Bold": {"file": "PTSans-Bold.ttf"},
+    "English · Bitter Bold": {"file": "Bitter.ttf", "variation": "Bold"},
+    "English · Archivo Black": {"file": "ArchivoBlack-Regular.ttf"},
+    "English · Bebas Neue": {"file": "BebasNeue-Regular.ttf"},
+    "English · Roboto Slab Bold": {"file": "RobotoSlab.ttf", "variation": "Bold"},
+    "English · Newsreader Bold": {"file": "Newsreader.ttf", "variation": "Bold"},
+}
+DEFAULT_HINDI_SLUG_FONT = "Hindi · Noto Sans Devanagari Bold"
+DEFAULT_ENGLISH_SLUG_FONT = "English · Roboto Condensed Bold"
+
 SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
     "Jagran Red": {
         "background": "#79070D",
@@ -180,6 +221,14 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
         "text": "#FFFFFF",
         "highlight_text": "#081019",
         "label_text": "#081019",
+    },
+    "Text only": {
+        "background": "#000000",
+        "background_end": "#000000",
+        "accent": "#F4C542",
+        "text": "#FFFFFF",
+        "highlight_text": "#F4C542",
+        "label_text": "#FFFFFF",
     },
     "Custom": {
         "background": "#79070D",
@@ -500,6 +549,72 @@ def video_preview_data_url(path_value: str, modified_ns: int) -> str:
         return f"data:image/jpeg;base64,{encoded}"
     except Exception:
         return ""
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def canvas_video_data_url(path_value: str, modified_ns: int) -> str:
+    """Create a lightweight MP4, including audio, for canvas composition playback."""
+    ensure_dirs()
+    ffmpeg = tool_path("ffmpeg")
+    if not ffmpeg:
+        return ""
+    source = Path(path_value)
+    digest = hashlib.sha256(
+        f"canvas-preview-v2-audio:{source}:{modified_ns}".encode("utf-8")
+    ).hexdigest()[:16]
+    proxy = PREVIEW_DIR / f"{source.stem}_canvas_{digest}.mp4"
+    if not proxy.exists() or proxy.stat().st_size <= 1024:
+        result = run_command(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(source),
+                "-vf",
+                "scale=640:360:force_original_aspect_ratio=decrease,"
+                "pad=640:360:(ow-iw)/2:(oh-ih)/2:black,fps=15",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "31",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                "-movflags",
+                "+faststart",
+                str(proxy),
+            ],
+            timeout_seconds=10 * 60,
+        )
+        if result.returncode != 0 or not proxy.exists():
+            proxy.unlink(missing_ok=True)
+            return ""
+    encoded = base64.b64encode(proxy.read_bytes()).decode("ascii")
+    return f"data:video/mp4;base64,{encoded}"
+
+
+def canvas_audio_data_url(payload: object, mime_type: str) -> str:
+    """Encode an approved in-session voiceover for synchronized canvas playback."""
+    if not isinstance(payload, (bytes, bytearray)) or not payload:
+        return ""
+    encoded = base64.b64encode(bytes(payload)).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+@st.cache_data(show_spinner=False, max_entries=12)
+def canvas_audio_file_data_url(path_value: str, modified_ns: int) -> str:
+    """Encode an uploaded voiceover once for playback inside the canvas component."""
+    del modified_ns
+    path = Path(path_value)
+    if not path.is_file():
+        return ""
+    mime_type = mimetypes.guess_type(path.name)[0] or "audio/mpeg"
+    return canvas_audio_data_url(path.read_bytes(), mime_type)
 
 
 @st.cache_data(show_spinner=False)
@@ -2068,10 +2183,25 @@ def build_script_slate(script: str, source: Path) -> Path:
     return output
 
 
-def _overlay_font(text: str, size: int):
+def _overlay_font(text: str, size: int, font_name: str = ""):
     from PIL import ImageFont
 
     devanagari = bool(re.search(r"[\u0900-\u097f]", text))
+    selected_font = PUBLISHER_SLUG_FONTS.get(font_name)
+    if selected_font:
+        selected_path = PUBLISHER_FONT_DIR / selected_font["file"]
+        if selected_path.is_file():
+            try:
+                font = ImageFont.truetype(str(selected_path), size)
+                variation = selected_font.get("variation")
+                if variation and hasattr(font, "set_variation_by_name"):
+                    try:
+                        font.set_variation_by_name(variation)
+                    except Exception:
+                        pass
+                return font
+            except Exception:
+                pass
     candidates = (
         [
             "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
@@ -2195,6 +2325,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     label = re.sub(r"\s+", " ", str(slug.get("label") or "")).strip()
     style_name = str(slug.get("style") or "Jagran Red")
     preset = SLUG_STYLE_PRESETS.get(style_name, SLUG_STYLE_PRESETS["Jagran Red"])
+    text_only = style_name == "Text only"
     background = str(slug.get("background_color") or preset["background"])
     background_end = str(
         slug.get("background_end_color") or preset["background_end"]
@@ -2202,7 +2333,15 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     highlight_color = str(slug.get("highlight_color") or preset["accent"])
     region = str(slug.get("region") or "lower_third")
     geometry = slug.get("geometry") if isinstance(slug.get("geometry"), dict) else {}
-    text_color = str(preset["text"])
+    default_font_name = (
+        DEFAULT_HINDI_SLUG_FONT
+        if re.search(r"[\u0900-\u097f]", text)
+        else DEFAULT_ENGLISH_SLUG_FONT
+    )
+    font_name = str(slug.get("font_name") or default_font_name)
+    if font_name not in PUBLISHER_SLUG_FONTS:
+        font_name = default_font_name
+    text_color = str(slug.get("text_color") or preset["text"])
     highlight_text_color = str(preset["highlight_text"])
     label_text_color = str(preset["label_text"])
     cache_payload = json.dumps(
@@ -2214,10 +2353,12 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "background": background,
             "background_end": background_end,
             "highlight_color": highlight_color,
+            "text_color": text_color,
             "region": region,
             "geometry": geometry,
             "font_size": int(slug.get("font_size") or 52),
-            "design_version": 7,
+            "font_name": font_name,
+            "design_version": 10,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -2250,54 +2391,56 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
         right, bottom = OUTPUT_WIDTH - 84, OUTPUT_HEIGHT - 92
         radius = 24
 
-    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    shadow_draw = ImageDraw.Draw(shadow)
-    shadow_draw.rounded_rectangle(
-        (left + 5, top + 10, right + 5, bottom + 10),
-        radius=radius,
-        fill=(0, 0, 0, 150),
-    )
-    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(14)))
-
     panel_width = right - left
     panel_height = bottom - top
-    start_rgb = ImageColor.getrgb(background)
-    end_rgb = ImageColor.getrgb(background_end)
-    gradient = Image.new("RGBA", (panel_width, panel_height))
-    gradient_pixels = gradient.load()
-    for y_position in range(panel_height):
-        ratio = y_position / max(1, panel_height - 1)
-        row_colour = tuple(
-            int(start_rgb[channel] * (1 - ratio) + end_rgb[channel] * ratio)
-            for channel in range(3)
-        ) + (246,)
-        for x_position in range(panel_width):
-            gradient_pixels[x_position, y_position] = row_colour
-    mask = Image.new("L", (panel_width, panel_height), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, panel_width - 1, panel_height - 1), radius=radius, fill=255
-    )
-    canvas.paste(gradient, (left, top), mask)
+    if not text_only:
+        shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        shadow_draw = ImageDraw.Draw(shadow)
+        shadow_draw.rounded_rectangle(
+            (left + 5, top + 10, right + 5, bottom + 10),
+            radius=radius,
+            fill=(0, 0, 0, 150),
+        )
+        canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(14)))
+
+        start_rgb = ImageColor.getrgb(background)
+        end_rgb = ImageColor.getrgb(background_end)
+        gradient = Image.new("RGBA", (panel_width, panel_height))
+        gradient_pixels = gradient.load()
+        for y_position in range(panel_height):
+            ratio = y_position / max(1, panel_height - 1)
+            row_colour = tuple(
+                int(start_rgb[channel] * (1 - ratio) + end_rgb[channel] * ratio)
+                for channel in range(3)
+            ) + (246,)
+            for x_position in range(panel_width):
+                gradient_pixels[x_position, y_position] = row_colour
+        mask = Image.new("L", (panel_width, panel_height), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, panel_width - 1, panel_height - 1), radius=radius, fill=255
+        )
+        canvas.paste(gradient, (left, top), mask)
     draw = ImageDraw.Draw(canvas)
 
     accent_rgba = ImageColor.getcolor(highlight_color, "RGBA")
     accent_left = left
-    draw.rounded_rectangle(
-        (accent_left, top, accent_left + 18, bottom),
-        radius=9,
-        fill=accent_rgba,
-    )
-    draw.line(
-        (accent_left + 42, top + 19, right - 34, top + 19),
-        fill=(*ImageColor.getrgb(highlight_color), 105),
-        width=2,
-    )
+    if not text_only:
+        draw.rounded_rectangle(
+            (accent_left, top, accent_left + 18, bottom),
+            radius=9,
+            fill=accent_rgba,
+        )
+        draw.line(
+            (accent_left + 42, top + 19, right - 34, top + 19),
+            fill=(*ImageColor.getrgb(highlight_color), 105),
+            width=2,
+        )
 
-    text_left = accent_left + 58
-    text_right = right - 42
-    text_top = top + 33
-    if label:
-        label_font = _overlay_font(label, 27)
+    text_left = accent_left + (18 if text_only else 58)
+    text_right = right - (18 if text_only else 42)
+    text_top = top + (12 if text_only else 33)
+    if label and not text_only:
+        label_font = _overlay_font(label, 27, font_name)
         label_bbox = draw.textbbox((0, 0), label, font=label_font)
         label_width = label_bbox[2] - label_bbox[0] + 40
         label_top = top - 27
@@ -2325,7 +2468,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     word_matches = list(re.finditer(r"\S+", text))
 
     def wrapped_words(font_size: int) -> Tuple[object, List[List[Tuple[str, bool]]]]:
-        font_value = _overlay_font(text, font_size)
+        font_value = _overlay_font(text, font_size, font_name)
         lines: List[List[Tuple[str, bool]]] = [[]]
         current_width = 0.0
         space_width = draw.textlength(" ", font=font_value)
@@ -2381,24 +2524,30 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
                 x += space_width
             word_width = draw.textlength(word, font=font)
             if highlighted_word:
-                draw.rounded_rectangle(
-                    (
-                        x - 8,
-                        y + sample_bbox[1] - 6,
-                        x + word_width + 8,
-                        y + sample_bbox[3] + 6,
-                    ),
-                    radius=8,
-                    fill=accent_rgba,
-                )
+                if not text_only:
+                    draw.rounded_rectangle(
+                        (
+                            x - 8,
+                            y + sample_bbox[1] - 6,
+                            x + word_width + 8,
+                            y + sample_bbox[3] + 6,
+                        ),
+                        radius=8,
+                        fill=accent_rgba,
+                    )
                 draw.text(
                     (x, y),
                     word,
                     font=font,
-                    fill=highlight_text_color,
+                    fill=(highlight_color if text_only else highlight_text_color),
                 )
             else:
-                draw.text((x, y), word, font=font, fill=text_color)
+                draw.text(
+                    (x, y),
+                    word,
+                    font=font,
+                    fill=text_color,
+                )
             x += word_width
         y += line_height + line_gap
     temporary_output = output.with_name(
@@ -2576,6 +2725,7 @@ def export_horizontal_video(
     pause_audio_overlays: Optional[List[Dict[str, object]]] = None,
     template_layout: str = "classic",
     template_geometry: Optional[Dict[str, Dict[str, float]]] = None,
+    raw_audio_settings: Optional[Dict[str, object]] = None,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2609,6 +2759,21 @@ def export_horizontal_video(
         return None, "The selected removals delete the entire source video."
     edited_source_duration = sum(
         end - start for start, end in source_keep_ranges
+    )
+    raw_audio_config = raw_audio_settings or {}
+    configured_raw_volume = raw_audio_config.get("volume")
+    raw_audio_volume = clamp_float(
+        float(1.0 if configured_raw_volume is None else configured_raw_volume),
+        0.0,
+        1.0,
+    )
+    raw_audio_start = clamp_float(
+        float(raw_audio_config.get("start") or 0.0), 0.0, edited_source_duration
+    )
+    raw_audio_end = clamp_float(
+        float(raw_audio_config.get("end") or edited_source_duration),
+        raw_audio_start,
+        edited_source_duration,
     )
 
     source_geometry = (template_geometry or {}).get("source", {})
@@ -2780,6 +2945,16 @@ def export_horizontal_video(
                         "end": end,
                         "duration": duration,
                         "trim_start": trim_start,
+                        "volume": clamp_float(
+                            float(
+                                1.0
+                                if item.get("audio_volume") is None
+                                else item["audio_volume"]
+                            ),
+                            0.0,
+                            1.0,
+                        ),
+                        "audio_mode": str(item.get("audio_mode") or "replace"),
                     }
                 )
         else:
@@ -3044,11 +3219,17 @@ def export_horizontal_video(
                     f"[{voiceover_input_index}:a]apad[baseaudio]"
                 )
         base_audio_label = "baseaudio"
-    elif keep_original_audio and media_has_audio(
+    if keep_original_audio and raw_audio_end > raw_audio_start + 0.001 and media_has_audio(
         str(source), source.stat().st_mtime_ns
     ):
         if full_source_kept:
-            filter_parts.append(f"[{input_index}:a]apad[baseaudio]")
+            raw_delay_ms = max(0, int(round(raw_audio_start * 1000)))
+            filter_parts.append(
+                f"[{input_index}:a]atrim=start={raw_audio_start:.3f}:"
+                f"end={raw_audio_end:.3f},asetpts=PTS-STARTPTS,"
+                f"volume={raw_audio_volume:.3f},"
+                f"adelay={raw_delay_ms}:all=1,apad[rawaudio]"
+            )
         else:
             source_audio_labels = [
                 f"sourcekeepa{keep_number}"
@@ -3076,9 +3257,18 @@ def export_horizontal_video(
             filter_parts.append(
                 "".join(kept_audio_labels)
                 + f"concat=n={len(kept_audio_labels)}:v=0:a=1,"
-                "apad[baseaudio]"
+                f"volume={raw_audio_volume:.3f},apad[rawaudio]"
             )
-        base_audio_label = "baseaudio"
+        if base_audio_label is None:
+            filter_parts.append("[rawaudio]anull[baseaudio]")
+            base_audio_label = "baseaudio"
+        else:
+            filter_parts.append(
+                f"[{base_audio_label}][rawaudio]"
+                "amix=inputs=2:duration=longest:dropout_transition=0:normalize=0"
+                "[basewithrawaudio]"
+            )
+            base_audio_label = "basewithrawaudio"
 
     if pause_audio_inputs:
         pause_audio_labels: List[str] = []
@@ -3118,18 +3308,26 @@ def export_horizontal_video(
 
     output_audio_label: Optional[str] = base_audio_label
     if byte_audio_inputs and base_audio_label is not None:
+        replacing_byte_audio = [
+            item
+            for item in byte_audio_inputs
+            if str(item.get("audio_mode") or "replace") == "replace"
+        ]
         mute_filters = ",".join(
             (
                 "volume=0:"
                 f"enable='between(t,{float(item['start']):.3f},"
                 f"{float(item['end']):.3f})'"
             )
-            for item in byte_audio_inputs
+            for item in replacing_byte_audio
         )
-        filter_parts.append(
-            f"[{base_audio_label}]{mute_filters}[mutedbaseaudio]"
-        )
-        audio_labels = ["[mutedbaseaudio]"]
+        if mute_filters:
+            filter_parts.append(
+                f"[{base_audio_label}]{mute_filters}[mixedbaseaudio]"
+            )
+            audio_labels = ["[mixedbaseaudio]"]
+        else:
+            audio_labels = [f"[{base_audio_label}]"]
         for audio_number, item in enumerate(byte_audio_inputs):
             delay_ms = max(0, int(round(float(item["start"]) * 1000)))
             filter_parts.append(
@@ -3137,6 +3335,7 @@ def export_horizontal_video(
                 f"atrim=start={float(item['trim_start']):.3f}:"
                 f"duration={float(item['duration']):.3f},"
                 "asetpts=PTS-STARTPTS,"
+                f"volume={float(1.0 if item.get('volume') is None else item['volume']):.3f},"
                 f"adelay={delay_ms}:all=1[bytea{audio_number}]"
             )
             audio_labels.append(f"[bytea{audio_number}]")
@@ -3155,6 +3354,7 @@ def export_horizontal_video(
                 f"atrim=start={float(item['trim_start']):.3f}:"
                 f"duration={float(item['duration']):.3f},"
                 "asetpts=PTS-STARTPTS,"
+                f"volume={float(1.0 if item.get('volume') is None else item['volume']):.3f},"
                 f"adelay={delay_ms}:all=1[bytea{audio_number}]"
             )
             audio_labels.append(f"[bytea{audio_number}]")
@@ -3308,23 +3508,11 @@ def render_workspace_header() -> None:
         str(st.session_state.get("partner_editable_transcript") or "").strip()
         or str(st.session_state.get("partner_manual_script") or "").strip()
     )
-    voice_ready = bool(
-        st.session_state.get("partner_voiceover")
-        or st.session_state.get("partner_eleven_preview_bytes")
-    )
-    timeline_ready = bool(
-        st.session_state.get("partner_image_overlays")
-        or st.session_state.get("partner_slug_overlays")
-        or st.session_state.get("partner_source_cuts")
-    )
     export_ready = bool(st.session_state.get("partner_latest_export"))
     statuses = [
-        ("01", "Upload", source_ready),
-        ("02", "Script", script_ready),
-        ("03", "Edit", script_ready),
-        ("04", "Voice", voice_ready),
-        ("05", "Timeline", timeline_ready),
-        ("06", "Export", export_ready),
+        ("01", "Editor", source_ready),
+        ("02", "Script & voice", script_ready),
+        ("03", "Publish", export_ready),
     ]
     completed = sum(1 for _, _, ready in statuses if ready)
     active_index = min(completed, len(statuses) - 1)
@@ -3677,7 +3865,7 @@ def main() -> None:
         }
         .studio-progress {
             display: grid;
-            grid-template-columns: repeat(6, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             border-top: 1px solid var(--studio-border);
             background: #fbfcfd;
         }
@@ -3889,10 +4077,9 @@ def main() -> None:
 
     workspace_tabs = st.tabs(
         [
-            "Story setup",
-            "Voice studio",
-            "Visual timeline",
-            "Review & export",
+            "Editor",
+            "Script & voice",
+            "Publish",
         ]
     )
 
@@ -3989,6 +4176,7 @@ def main() -> None:
                                 "partner_voiceover",
                                 "partner_eleven_preview_bytes",
                                 "partner_audio_preview_bytes",
+                                "partner_voiceover_preview_path",
                                 "partner_latest_export",
                                 "partner_latest_preview",
                             ):
@@ -3996,7 +4184,7 @@ def main() -> None:
                             st.success(import_message)
                             st.rerun()
                         st.error(import_message)
-    
+
         source_path: Optional[Path] = None
         if uploaded:
             signature = f"{uploaded.name}:{uploaded.size}"
@@ -4011,6 +4199,7 @@ def main() -> None:
                 st.session_state.pop("partner_manual_script", None)
                 st.session_state.pop("partner_voiceover", None)
                 st.session_state.pop("partner_voiceover_signature", None)
+                st.session_state.pop("partner_voiceover_preview_path", None)
                 st.session_state.pop("partner_image_overlays", None)
                 st.session_state.pop("partner_removed_overlay_signatures", None)
                 st.session_state.pop("partner_slug_enabled", None)
@@ -4032,33 +4221,31 @@ def main() -> None:
                 source_path = existing_source
                 source_label = st.session_state.get("partner_video_source_label") or "Selected source"
                 st.success(f"{source_label}: {source_path.name}")
-    
+
         if not source_path:
-            st.info("Upload a partner video here to unlock the production workspace.")
+            st.info("Upload a partner video here to open the editor.")
             workspace_tabs[1].info(
-                "Voice Studio unlocks after a source video and script are ready."
+                "Script and voice tools unlock after a raw video is added."
             )
             workspace_tabs[2].info(
-                "Visual Timeline unlocks after the story setup is complete."
-            )
-            workspace_tabs[3].info(
-                "Review & Export unlocks when the production has a source and script."
+                "Publishing tools unlock when the production has a source video."
             )
             return
-    
+
         if st.session_state.get("partner_transcription_pipeline") != TRANSCRIPTION_PIPELINE_VERSION:
             st.session_state["partner_transcription_pipeline"] = TRANSCRIPTION_PIPELINE_VERSION
             st.session_state.pop("partner_transcript", None)
             st.session_state.pop("partner_segments", None)
             st.session_state.pop("partner_editable_transcript", None)
-    
+
         meta = probe_video(source_path)
         raw_video_duration = max(0.1, float(meta.get("duration") or 60.0))
         editor_video_duration = raw_video_duration
         if meta:
             st.caption(f"{int(meta.get('width', 0))}x{int(meta.get('height', 0))} · {compact_time(meta.get('duration', 0))} · {meta.get('fps', 0):.2f} fps")
         st.video(str(source_path))
-    
+
+    with workspace_tabs[1]:
         render_stage_header(
             2,
             "Prepare the story",
@@ -4070,23 +4257,32 @@ def main() -> None:
             horizontal=True,
             label_visibility="collapsed",
         )
-        transcript_controls = st.columns([0.7, 0.3], vertical_alignment="bottom")
-        language_label = transcript_controls[0].selectbox(
-            "Language",
-            ["Hindi", "English", "Auto detect"],
-            index=0,
-            help="Hindi is the default so Hindi speech is written in Devanagari instead of Urdu script.",
+        language_label = str(
+            st.session_state.get("partner_transcription_language") or "Hindi"
         )
         generate_clicked = False
         if script_method == "Generate transcript from video":
+            transcript_controls = st.columns(
+                [0.7, 0.3], vertical_alignment="bottom"
+            )
+            language_label = transcript_controls[0].selectbox(
+                "Language",
+                ["Hindi", "English", "Auto detect"],
+                index=0,
+                key="partner_transcription_language",
+                help=(
+                    "Hindi is the default so Hindi speech is written in "
+                    "Devanagari instead of Urdu script."
+                ),
+            )
             generate_clicked = transcript_controls[1].button(
                 "Generate transcript",
                 type="primary",
                 use_container_width=True,
             )
         else:
-            transcript_controls[1].caption("Type or paste the script below.")
-    
+            st.caption("Type or paste the script below.")
+
         if generate_clicked:
             language_code = {
                 "Hindi": "hi",
@@ -4111,22 +4307,16 @@ def main() -> None:
                 st.success(message)
             else:
                 st.error(message)
-    
+
         if script_method == "Write script manually" and "partner_manual_script" not in st.session_state:
             st.session_state["partner_manual_script"] = ""
-    
+
         if script_method == "Generate transcript from video" and not st.session_state.get("partner_editable_transcript"):
-            workspace_tabs[1].info(
-                "Generate the transcript in Story Setup to continue to Voice Studio."
+            st.info(
+                "Generate the transcript above, or switch to manual script entry. "
+                "The Editor remains available while you prepare the narration."
             )
-            workspace_tabs[2].info(
-                "The timeline becomes available after the transcript is generated."
-            )
-            workspace_tabs[3].info(
-                "Complete the transcript before reviewing or exporting the video."
-            )
-            return
-    
+
         render_stage_header(
             3,
             "Refine the transcript"
@@ -4143,7 +4333,7 @@ def main() -> None:
         )
         if edited_transcript.strip():
             if st.button(
-                "Continue to Voice Studio →",
+                "Continue to voice settings ↓",
                 type="primary",
                 use_container_width=True,
                 key="partner_continue_to_voice",
@@ -4153,14 +4343,14 @@ def main() -> None:
                     <script>
                     const tabs = window.parent.document.querySelectorAll('[role="tab"]');
                     const voiceTab = Array.from(tabs).find(
-                        (tab) => tab.textContent.trim() === 'Voice studio'
+                        (tab) => tab.textContent.trim() === 'Script & voice'
                     );
                     if (voiceTab) voiceTab.click();
                     </script>
                     """,
                     height=0,
                 )
-    
+
     with workspace_tabs[1]:
         render_stage_header(
             4,
@@ -4181,7 +4371,7 @@ def main() -> None:
             index=0,
             label_visibility="collapsed",
         )
-    
+
         voiceover_upload = None
         producer_consent = False
         reference_audio: Optional[Path] = None
@@ -4277,7 +4467,8 @@ def main() -> None:
                 st.session_state.pop("partner_eleven_preview_bytes", None)
                 st.session_state.pop("partner_eleven_preview_message", None)
                 st.session_state.pop("partner_eleven_preview_duration", None)
-    
+                st.session_state.pop("partner_voiceover_preview_path", None)
+
             st.markdown("#### Test voice before video")
             st.caption(
                 "The complete script is generated as one continuous reading. "
@@ -4301,6 +4492,9 @@ def main() -> None:
                         voice_speed,
                     )
                 if preview_path:
+                    st.session_state["partner_voiceover_preview_path"] = str(
+                        preview_path
+                    )
                     st.session_state["partner_eleven_preview_bytes"] = (
                         preview_path.read_bytes()
                     )
@@ -4310,7 +4504,7 @@ def main() -> None:
                     )
                 else:
                     st.error(preview_message)
-    
+
             eleven_preview = st.session_state.get("partner_eleven_preview_bytes")
             if eleven_preview:
                 st.audio(eleven_preview, format="audio/mpeg")
@@ -4453,7 +4647,7 @@ def main() -> None:
                         "The delivery version must contain the same words as the transcript. "
                         "Change punctuation only."
                     )
-    
+
             preview_ready = bool(
                 reference_audio
                 and reference_audio.exists()
@@ -4478,8 +4672,9 @@ def main() -> None:
             if st.session_state.get("partner_audio_preview_signature") != preview_signature:
                 st.session_state.pop("partner_audio_preview_bytes", None)
                 st.session_state.pop("partner_audio_preview_message", None)
+                st.session_state.pop("partner_voiceover_preview_path", None)
                 st.session_state["partner_audio_preview_signature"] = preview_signature
-    
+
             st.markdown("#### Test voice before video")
             st.caption(
                 "Generate and review only the selected producer voice. The preview is "
@@ -4511,7 +4706,7 @@ def main() -> None:
                     st.session_state["partner_audio_preview_message"] = preview_message
                 else:
                     st.error(preview_message)
-    
+
             session_preview = st.session_state.get("partner_audio_preview_bytes")
             if session_preview:
                 st.audio(session_preview, format="audio/wav")
@@ -4531,7 +4726,7 @@ def main() -> None:
                     saved_voiceover = save_voiceover_upload(voiceover_upload)
                     st.session_state["partner_voiceover"] = str(saved_voiceover)
                     st.session_state["partner_voiceover_signature"] = voiceover_signature
-    
+
         uploaded_voiceover = Path(st.session_state["partner_voiceover"]) if st.session_state.get("partner_voiceover") else None
         if voice_choice == "Upload completed voiceover" and uploaded_voiceover and uploaded_voiceover.exists():
             st.audio(str(uploaded_voiceover))
@@ -4547,7 +4742,7 @@ def main() -> None:
         )
         st.divider()
         if st.button(
-            "Continue to Visual Timeline →",
+            "Return to Editor →",
             type="primary",
             use_container_width=True,
             disabled=not voice_workspace_ready,
@@ -4563,7 +4758,7 @@ def main() -> None:
                 <script>
                 const tabs = window.parent.document.querySelectorAll('[role="tab"]');
                 const timelineTab = Array.from(tabs).find(
-                    (tab) => tab.textContent.trim() === 'Visual timeline'
+                    (tab) => tab.textContent.trim() === 'Editor'
                 );
                 if (timelineTab) timelineTab.click();
                 </script>
@@ -4571,13 +4766,83 @@ def main() -> None:
                 height=0,
             )
 
-    with workspace_tabs[2]:
+    with workspace_tabs[0]:
         render_stage_header(
             5,
-            "Build the rendered-video layout",
-            "Arrange the PNG, slug, logo, raw video and looping-image panel.",
+            "Edit the raw video",
+            "Arrange media, control audio, remove sections, add pauses and place slugs.",
         )
         template_layout = "two_column"
+        latest_editor_preview = Path(
+            str(st.session_state.get("partner_latest_preview") or "")
+        )
+        if latest_editor_preview.is_file():
+            st.markdown("**Playback preview**")
+            st.video(str(latest_editor_preview))
+            st.caption(
+                "This player shows the latest completed render. Generate again in "
+                "Publish after changing the timeline to refresh it."
+            )
+        raw_has_audio = media_has_audio(
+            str(source_path), source_path.stat().st_mtime_ns
+        )
+        with st.expander("Raw video audio", expanded=True):
+            raw_audio_enabled = st.toggle(
+                "Play audio from the uploaded raw video",
+                value=(voice_choice == "No voiceover — use original video audio"),
+                disabled=not raw_has_audio,
+                key="partner_raw_audio_enabled",
+                help=(
+                    "This can play together with voiceover and floating-video "
+                    "audio. Turn it off to keep the raw video muted."
+                ),
+            )
+            raw_audio_columns = st.columns([0.38, 0.62], vertical_alignment="bottom")
+            st.session_state["partner_raw_audio_volume"] = int(
+                clamp_float(
+                    float(st.session_state.get("partner_raw_audio_volume", 100)),
+                    0.0,
+                    100.0,
+                )
+            )
+            raw_audio_volume = raw_audio_columns[0].slider(
+                "Raw audio volume",
+                min_value=0,
+                max_value=100,
+                step=5,
+                format="%d%%",
+                disabled=not raw_audio_enabled,
+                key="partner_raw_audio_volume",
+            ) / 100.0
+            custom_raw_audio_window = raw_audio_columns[1].toggle(
+                "Use only part of the raw video's audio",
+                value=False,
+                disabled=not raw_audio_enabled,
+                key="partner_raw_audio_custom_window",
+            )
+            raw_audio_start = 0.0
+            raw_audio_end = editor_video_duration
+            if raw_audio_enabled and custom_raw_audio_window:
+                raw_audio_window = st.slider(
+                    "Raw audio plays from → to",
+                    min_value=0.0,
+                    max_value=float(editor_video_duration),
+                    value=(0.0, float(editor_video_duration)),
+                    step=0.1,
+                    key="partner_raw_audio_window",
+                )
+                raw_audio_start, raw_audio_end = map(float, raw_audio_window)
+            if raw_audio_enabled:
+                st.caption(
+                    f"Raw audio: {compact_time(raw_audio_start)}–"
+                    f"{compact_time(raw_audio_end)} at {raw_audio_volume * 100:.0f}% volume."
+                )
+        raw_audio_settings_for_export = {
+            "enabled": bool(raw_audio_enabled and raw_has_audio),
+            "volume": float(raw_audio_volume),
+            "start": float(raw_audio_start),
+            "end": float(raw_audio_end),
+        }
         st.caption(
             "The top PNG and slug banner are separate canvas layers. Move and "
             "resize either one independently."
@@ -4588,6 +4853,18 @@ def main() -> None:
             key="partner_selected_property",
             help=f"Logo files are loaded locally from {PROPERTY_LOGO_DIR}.",
         )
+        hidden_template_components = set(
+            str(value)
+            for value in st.session_state.get(
+                "partner_template_hidden_components", []
+            )
+        )
+        st.session_state.setdefault("partner_template_header_upload_generation", 0)
+        st.session_state.setdefault("partner_template_loop_upload_generation", 0)
+        st.session_state.setdefault("partner_template_canvas_generation", 0)
+        if st.session_state.get("partner_last_selected_property") != selected_property:
+            hidden_template_components.discard("logo")
+            st.session_state["partner_last_selected_property"] = selected_property
         selected_logo_path = property_logo_path(selected_property)
         if selected_logo_path:
             st.caption(f"Using local {selected_property} logo: {selected_logo_path.name}")
@@ -4597,18 +4874,39 @@ def main() -> None:
                 f"Add the {selected_property} logo at `{expected_logo}`. The layout "
                 "will work without it until that file is available."
             )
+        if "logo" in hidden_template_components and selected_logo_path:
+            if st.button(
+                ":material/add_photo_alternate: Add selected logo back",
+                key="partner_restore_selected_logo",
+                width="stretch",
+            ):
+                hidden_template_components.discard("logo")
+                st.session_state["partner_template_hidden_components"] = sorted(
+                    hidden_template_components
+                )
+                st.session_state["partner_template_canvas_generation"] = (
+                    int(st.session_state.get("partner_template_canvas_generation", 0))
+                    + 1
+                )
+                st.rerun()
         template_columns = st.columns([0.42, 0.58], vertical_alignment="top")
         template_header_upload = template_columns[0].file_uploader(
             "Top PNG",
             type=["png"],
-            key="partner_template_header_upload",
+            key=(
+                "partner_template_header_upload_"
+                f"{st.session_state['partner_template_header_upload_generation']}"
+            ),
             help="This PNG occupies the left 20% of the top strip.",
         )
         template_loop_uploads = template_columns[1].file_uploader(
             "Floating images and videos",
             type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "m4v", "webm", "mkv"],
             accept_multiple_files=True,
-            key="partner_template_loop_uploads",
+            key=(
+                "partner_template_loop_uploads_"
+                f"{st.session_state['partner_template_loop_upload_generation']}"
+            ),
             help="Images and videos play in order and repeat for the complete output.",
         )
         template_photo_seconds = st.number_input(
@@ -4623,12 +4921,17 @@ def main() -> None:
             header_signature = (
                 f"{template_header_upload.name}:{template_header_upload.size}"
             )
-            if st.session_state.get("partner_template_header_signature") != header_signature:
+            if (
+                st.session_state.get("partner_template_header_signature")
+                != header_signature
+                or not st.session_state.get("partner_template_header_path")
+            ):
                 header_path = save_overlay_upload(
                     template_header_upload, time.time_ns()
                 )
                 st.session_state["partner_template_header_signature"] = header_signature
                 st.session_state["partner_template_header_path"] = str(header_path)
+                hidden_template_components.discard("header_image")
         loop_signature = tuple(
             f"{item.name}:{item.size}" for item in (template_loop_uploads or [])
         )
@@ -4648,6 +4951,7 @@ def main() -> None:
                 })
             st.session_state["partner_template_loop_signature"] = loop_signature
             st.session_state["partner_template_loop_items"] = loop_items
+            hidden_template_components.discard("images")
 
         template_loop_items = [
             dict(item) for item in st.session_state.get("partner_template_loop_items", [])
@@ -4658,42 +4962,125 @@ def main() -> None:
                 continue
             media_path = Path(str(media_item["path"]))
             has_audio = media_has_audio(str(media_path), media_path.stat().st_mtime_ns)
-            media_item["use_clip_audio"] = st.toggle(
-                f"Play audio from floating video: {media_item.get('name') or media_path.name}",
-                value=bool(media_item.get("use_clip_audio")) and has_audio,
+            floating_audio_columns = st.columns([0.62, 0.38], vertical_alignment="bottom")
+            current_audio_mode = str(media_item.get("audio_mode") or "mix")
+            if not bool(media_item.get("use_clip_audio")):
+                current_audio_mode = "muted"
+            audio_mode_label = floating_audio_columns[0].selectbox(
+                f"Audio · {media_item.get('name') or media_path.name}",
+                ["Muted", "Mix with raw/voice audio", "Solo while visible"],
+                index={"muted": 0, "mix": 1, "replace": 2}.get(
+                    current_audio_mode, 0
+                ),
                 disabled=not has_audio,
-                key=f"partner_template_media_audio_{media_index}_{media_path.name}",
-                help="While this audio plays, raw-video or voiceover audio is muted automatically.",
+                key=f"partner_template_media_audio_mode_{media_index}_{media_path.name}",
             )
+            media_item["use_clip_audio"] = bool(
+                has_audio and audio_mode_label != "Muted"
+            )
+            media_item["audio_mode"] = (
+                "replace"
+                if audio_mode_label == "Solo while visible"
+                else "mix"
+            )
+            floating_volume_key = (
+                f"partner_template_media_audio_volume_{media_index}_{media_path.name}"
+            )
+            st.session_state[floating_volume_key] = int(
+                clamp_float(
+                    float(
+                        st.session_state.get(
+                            floating_volume_key,
+                            clamp_float(
+                                float(
+                                    1.0
+                                    if media_item.get("audio_volume") is None
+                                    else media_item["audio_volume"]
+                                ),
+                                0.0,
+                                1.0,
+                            )
+                            * 100,
+                        )
+                    ),
+                    0.0,
+                    100.0,
+                )
+            )
+            media_item["audio_volume"] = floating_audio_columns[1].slider(
+                "Volume",
+                min_value=0,
+                max_value=100,
+                step=5,
+                format="%d%%",
+                disabled=not media_item["use_clip_audio"],
+                key=floating_volume_key,
+            ) / 100.0
         st.session_state["partner_template_loop_items"] = template_loop_items
+        st.session_state["partner_template_hidden_components"] = sorted(
+            hidden_template_components
+        )
 
         template_header_path_for_editor = Path(
             str(st.session_state.get("partner_template_header_path") or "")
         )
         template_loop_paths_for_editor = [Path(str(item["path"])) for item in template_loop_items]
         default_canvas_layout = [
-            {"id": "header_image", "x": 0.01, "y": 0.01, "w": 0.20, "h": 0.18, "z": 3, "start": 0.0, "duration": editor_video_duration},
             {"id": "source", "x": 0.0, "y": 0.20, "w": 0.50, "h": 0.80, "z": 1, "start": 0.0, "duration": editor_video_duration},
-            {"id": "images", "x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80, "z": 1, "start": 0.0, "duration": editor_video_duration},
         ]
-        if selected_logo_path:
+        if (
+            template_header_path_for_editor.is_file()
+            and "header_image" not in hidden_template_components
+        ):
+            default_canvas_layout.append(
+                {"id": "header_image", "x": 0.01, "y": 0.01, "w": 0.20, "h": 0.18, "z": 3, "start": 0.0, "duration": editor_video_duration}
+            )
+        if template_loop_paths_for_editor and "images" not in hidden_template_components:
+            default_canvas_layout.append(
+                {"id": "images", "x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80, "z": 1, "start": 0.0, "duration": editor_video_duration}
+            )
+        if selected_logo_path and "logo" not in hidden_template_components:
             default_canvas_layout.append(
                 {"id": "logo", "x": 0.84, "y": 0.035, "w": 0.13, "h": 0.11, "z": 5, "start": 0.0, "duration": editor_video_duration}
             )
-        current_canvas_layout = st.session_state.get(
-            "partner_template_canvas_layout", default_canvas_layout
-        )
+        active_canvas_ids = {str(item["id"]) for item in default_canvas_layout}
+        current_canvas_layout = [
+            dict(item)
+            for item in st.session_state.get(
+                "partner_template_canvas_layout", default_canvas_layout
+            )
+            if str(item.get("id")) in active_canvas_ids
+        ]
         current_canvas_ids = {str(item.get("id")) for item in current_canvas_layout}
         for default_item in default_canvas_layout:
             if default_item["id"] not in current_canvas_ids:
                 current_canvas_layout.append(default_item)
         canvas_images = [
-            {"id": "source", "name": "Raw video", "kind": "video", "src": video_preview_data_url(str(source_path), source_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
+            {
+                "id": "source",
+                "name": "Raw video",
+                "kind": "video",
+                "deletable": False,
+                "src": video_preview_data_url(
+                    str(source_path), source_path.stat().st_mtime_ns
+                ),
+                "video_src": canvas_video_data_url(
+                    str(source_path), source_path.stat().st_mtime_ns
+                ),
+                "preview_volume": (
+                    float(raw_audio_volume) if raw_audio_enabled else 0.0
+                ),
+                "start": 0.0,
+                "duration": editor_video_duration,
+            },
         ]
-        if template_header_path_for_editor.is_file():
+        if (
+            template_header_path_for_editor.is_file()
+            and "header_image" not in hidden_template_components
+        ):
             canvas_images.insert(
                 0,
-                {"id": "header_image", "name": "Top PNG", "kind": "image", "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
+                {"id": "header_image", "name": "Top PNG", "kind": "image", "deletable": True, "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
             )
         if template_loop_paths_for_editor:
             loop_preview_path = template_loop_paths_for_editor[0]
@@ -4706,29 +5093,32 @@ def main() -> None:
         else:
             first_floating_type = "image"
             loop_preview_src = ""
-        canvas_images.append(
-            {"id": "images", "name": "Floating media", "kind": first_floating_type, "src": loop_preview_src, "start": 0.0, "duration": editor_video_duration}
-        )
-        if selected_logo_path:
+        if template_loop_paths_for_editor and "images" not in hidden_template_components:
+            floating_preview_volume = 0.0
+            if first_floating_type == "video" and bool(
+                template_loop_items[0].get("use_clip_audio")
+            ):
+                stored_floating_volume = template_loop_items[0].get("audio_volume")
+                floating_preview_volume = clamp_float(
+                    float(
+                        1.0
+                        if stored_floating_volume is None
+                        else stored_floating_volume
+                    ),
+                    0.0,
+                    1.0,
+                )
             canvas_images.append(
-                {"id": "logo", "name": f"{selected_property} logo", "kind": "image", "src": image_preview_data_url(str(selected_logo_path), selected_logo_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration}
+                {"id": "images", "name": "Floating media", "kind": first_floating_type, "deletable": True, "src": loop_preview_src, "video_src": (canvas_video_data_url(str(loop_preview_path), loop_preview_path.stat().st_mtime_ns) if first_floating_type == "video" else ""), "preview_volume": floating_preview_volume, "start": 0.0, "duration": editor_video_duration}
             )
-        st.markdown("**Arrange the video canvas**")
-        st.caption(
-            "Drag any component to reposition it. Resize it from the lower-right "
-            "corner; these exact proportions are used in the final render."
-        )
-        template_canvas_result = overlay_layout_editor(
-            images=canvas_images,
-            layout=current_canvas_layout,
-            background="",
-            video_duration=editor_video_duration,
-            spatial_only=True,
-            default={"items": current_canvas_layout},
-            key=f"partner_template_canvas_{st.session_state.get('partner_video_signature', source_path.name)}_{selected_property}",
-        )
-        if isinstance(template_canvas_result, dict) and template_canvas_result.get("items"):
-            st.session_state["partner_template_canvas_layout"] = template_canvas_result["items"]
+        if selected_logo_path and "logo" not in hidden_template_components:
+            canvas_images.append(
+                {"id": "logo", "name": f"{selected_property} logo", "kind": "image", "deletable": True, "src": image_preview_data_url(str(selected_logo_path), selected_logo_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration}
+            )
+        # The canvas is populated after the slug controls have been read so that
+        # raw footage, floating media, logos and every slug share one editor.
+        # st.empty keeps that unified canvas in this primary position.
+        video_canvas_slot = st.empty()
 
         with st.expander("Advanced timing and source edits", expanded=False):
             st.caption(
@@ -4771,7 +5161,7 @@ def main() -> None:
             )
             st.session_state["partner_source_cuts"] = source_cut_items
             st.rerun()
-    
+
         remove_cut_id: Optional[str] = None
         for cut_index, cut in enumerate(source_cut_items):
             cut_id = str(cut["id"])
@@ -4834,7 +5224,7 @@ def main() -> None:
                 cut["start"] = float(cut_start)
                 cut["end"] = float(cut_end)
                 cut["to_end"] = bool(remove_through_end)
-    
+
         if remove_cut_id is not None:
             st.session_state["partner_source_cuts"] = [
                 item for item in source_cut_items if str(item["id"]) != remove_cut_id
@@ -4858,7 +5248,7 @@ def main() -> None:
                 else " · no sections removed"
             )
         )
-    
+
         st.markdown("**When narration is longer than the edited raw video**")
         tail_mode_labels = {
             "End with the edited raw video (no loop)": "end",
@@ -4890,7 +5280,7 @@ def main() -> None:
             st.caption(
                 "Only the edited raw-video base repeats; removed sections remain excluded."
             )
-    
+
         st.markdown("**Editor audio timeline**")
         st.caption(
             "Set narration start and pause windows directly alongside the canvas. "
@@ -4973,7 +5363,7 @@ def main() -> None:
                 st.session_state["partner_voice_pauses"] = voice_pause_items
                 st.session_state.pop("partner_new_voice_pause_window", None)
                 st.rerun()
-    
+
         remove_pause_id: Optional[str] = None
         for pause_index, pause in enumerate(voice_pause_items):
             pause_id = str(pause["id"])
@@ -5072,7 +5462,7 @@ def main() -> None:
                         st.warning("Upload the audio that should play during this pause.")
                 pause["insert_mode"] = insert_mode
                 pause["insert_script"] = insert_script.strip()
-    
+
         if remove_pause_id is not None:
             st.session_state["partner_voice_pauses"] = [
                 item for item in voice_pause_items if str(item["id"]) != remove_pause_id
@@ -5099,7 +5489,7 @@ def main() -> None:
                     for start, duration in voice_pauses_for_export
                 )
             )
-    
+
         editor_video_duration = max(
             0.1,
             edited_source_duration
@@ -5179,7 +5569,7 @@ def main() -> None:
         if added_bulk_image:
             st.session_state["partner_image_overlays"] = overlay_items
             st.rerun()
-    
+
         # Remove legacy empty placeholders from the previous long-form image UI.
         overlay_items = [
             item
@@ -5187,9 +5577,9 @@ def main() -> None:
             if item.get("path") and Path(str(item["path"])).exists()
         ]
         valid_overlay_items: List[Dict[str, object]] = list(overlay_items)
-    
+
         st.session_state["partner_image_overlays"] = overlay_items
-    
+
         image_overlays_for_export: List[Dict[str, object]] = []
         if valid_overlay_items:
             video_items = [
@@ -5217,26 +5607,66 @@ def main() -> None:
                         has_clip_audio = media_has_audio(
                             str(clip_path), clip_path.stat().st_mtime_ns
                         )
+                        current_audio_mode = str(item.get("audio_mode") or "mix")
+                        if not bool(item.get("use_clip_audio")):
+                            current_audio_mode = "muted"
                         audio_mode = st.selectbox(
                             "Audio while byte is visible",
                             [
-                                "Keep main voiceover",
-                                "Play original byte audio",
+                                "Muted",
+                                "Mix with raw/voice audio",
+                                "Solo while visible",
                             ],
-                            index=(
-                                1
-                                if bool(item.get("use_clip_audio"))
-                                and has_clip_audio
-                                else 0
+                            index={"muted": 0, "mix": 1, "replace": 2}.get(
+                                current_audio_mode, 0
                             ),
                             disabled=not has_clip_audio,
                             key=f"partner_byte_audio_{item['id']}",
                         )
                         item["trim_start"] = 0.0
                         item["use_clip_audio"] = bool(
-                            has_clip_audio
-                            and audio_mode == "Play original byte audio"
+                            has_clip_audio and audio_mode != "Muted"
                         )
+                        item["audio_mode"] = (
+                            "replace"
+                            if audio_mode == "Solo while visible"
+                            else "mix"
+                        )
+                        byte_volume_key = f"partner_byte_audio_volume_{item['id']}"
+                        st.session_state[byte_volume_key] = int(
+                            clamp_float(
+                                float(
+                                    st.session_state.get(
+                                        byte_volume_key,
+                                        clamp_float(
+                                            float(
+                                                1.0
+                                                if item.get("audio_volume") is None
+                                                else item["audio_volume"]
+                                            ),
+                                            0.0,
+                                            1.0,
+                                        )
+                                        * 100,
+                                    )
+                                ),
+                                0.0,
+                                100.0,
+                            )
+                        )
+                        item["audio_volume"] = st.slider(
+                            "Video audio volume",
+                            min_value=0,
+                            max_value=100,
+                            step=5,
+                            format="%d%%",
+                            disabled=not item["use_clip_audio"],
+                            key=byte_volume_key,
+                            help=(
+                                "Mix mode keeps raw-video and voiceover audio active. "
+                                "Solo mode mutes them only while this clip is visible."
+                            ),
+                        ) / 100.0
                         available_clip_duration = clip_duration
                         item["duration"] = min(
                             float(item.get("duration") or 5.0),
@@ -5251,7 +5681,7 @@ def main() -> None:
                             f"Uploaded byte length: {compact_time(clip_duration)} · "
                             "starts at 0:00 inside the clip"
                         )
-    
+
             current_layout = []
             missing_layout_ids = []
             for item in valid_overlay_items:
@@ -5295,7 +5725,7 @@ def main() -> None:
                     }
                     for item in valid_overlay_items
                 ]
-    
+
             editor_images = []
             for item in valid_overlay_items:
                 item_path = Path(str(item["path"]))
@@ -5317,6 +5747,13 @@ def main() -> None:
                         "start": float(item.get("start") or 0.0),
                         "duration": float(item.get("duration") or 5.0),
                         "src": preview_src,
+                        "video_src": (
+                            canvas_video_data_url(
+                                str(item_path), item_path.stat().st_mtime_ns
+                            )
+                            if media_type == "video"
+                            else ""
+                        ),
                     }
                 )
             source_preview = video_preview_data_url(
@@ -5396,6 +5833,12 @@ def main() -> None:
         template_header_path = Path(
             str(st.session_state.get("partner_template_header_path") or "")
         )
+        hidden_template_components = set(
+            str(value)
+            for value in st.session_state.get(
+                "partner_template_hidden_components", []
+            )
+        )
         stored_canvas_layout = st.session_state.get(
             "partner_template_canvas_layout", default_canvas_layout
         )
@@ -5406,7 +5849,10 @@ def main() -> None:
             for item in stored_canvas_layout
             if isinstance(item, dict) and item.get("id")
         }
-        if template_header_path.is_file():
+        if (
+            template_header_path.is_file()
+            and "header_image" not in hidden_template_components
+        ):
             header_image_geometry = template_geometry.get(
                 "header_image", {"x": 0.01, "y": 0.01, "w": 0.20, "h": 0.18}
             )
@@ -5428,7 +5874,10 @@ def main() -> None:
             dict(item) for item in st.session_state.get("partner_template_loop_items", [])
             if Path(str(item.get("path") or "")).is_file()
         ]
-        if template_loop_items_for_export:
+        if (
+            template_loop_items_for_export
+            and "images" not in hidden_template_components
+        ):
             panel_count = 1
             image_geometry = template_geometry.get(
                 "images", {"x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80}
@@ -5458,6 +5907,14 @@ def main() -> None:
                             "clip_duration": float(floating_item.get("clip_duration") or 0.0),
                             "trim_start": 0.0,
                             "use_clip_audio": bool(floating_item.get("use_clip_audio")),
+                            "audio_mode": str(
+                                floating_item.get("audio_mode") or "mix"
+                            ),
+                            "audio_volume": float(
+                                1.0
+                                if floating_item.get("audio_volume") is None
+                                else floating_item["audio_volume"]
+                            ),
                             "start": panel_time,
                             "duration": visible_duration,
                             "x": float(image_geometry.get("x", 0.50)),
@@ -5469,7 +5926,11 @@ def main() -> None:
                     )
                     panel_time += visible_duration
                     image_index += panel_count
-        if selected_logo_path and selected_logo_path.is_file():
+        if (
+            selected_logo_path
+            and selected_logo_path.is_file()
+            and "logo" not in hidden_template_components
+        ):
             logo_geometry = template_geometry.get(
                 "logo", {"x": 0.84, "y": 0.035, "w": 0.13, "h": 0.11}
             )
@@ -5488,7 +5949,7 @@ def main() -> None:
                     "fit_mode": "contain_transparent",
                 }
             )
-    
+
         st.divider()
         st.markdown("**Top-strip slugs**")
         st.caption(
@@ -5510,6 +5971,8 @@ def main() -> None:
                         "background_color": str(
                             st.session_state.get("partner_slug_background") or "#8F0711"
                         ),
+                        "text_color": SLUG_STYLE_PRESETS["Jagran Red"]["text"],
+                        "font_name": DEFAULT_HINDI_SLUG_FONT,
                         "highlight_color": str(
                             st.session_state.get("partner_slug_highlight_colour")
                             or "#F6D35D"
@@ -5526,7 +5989,7 @@ def main() -> None:
                 if legacy_text
                 else []
             )
-    
+
         slug_items: List[Dict[str, object]] = st.session_state[
             "partner_slug_overlays"
         ]
@@ -5562,6 +6025,8 @@ def main() -> None:
                     "background_color": SLUG_STYLE_PRESETS["Jagran Red"]["background"],
                     "background_end_color": SLUG_STYLE_PRESETS["Jagran Red"]["background_end"],
                     "highlight_color": SLUG_STYLE_PRESETS["Jagran Red"]["accent"],
+                    "text_color": SLUG_STYLE_PRESETS["Jagran Red"]["text"],
+                    "font_name": DEFAULT_HINDI_SLUG_FONT,
                     "font_size": 52,
                     "start": default_start,
                     "duration": default_duration,
@@ -5576,12 +6041,12 @@ def main() -> None:
             )
             st.session_state["partner_slug_overlays"] = slug_items
             st.rerun()
-    
+
         slugs_for_export: List[Dict[str, object]] = []
         slug_editor_images: List[Dict[str, object]] = []
         slug_editor_layout: List[Dict[str, object]] = []
         remove_slug_id: Optional[str] = None
-    
+
         for slug_index, slug in enumerate(slug_items):
             slug_id = str(slug["id"])
             slug_start_value = clamp_float(
@@ -5640,6 +6105,23 @@ def main() -> None:
                     key=f"partner_slug_font_size_{slug_id}",
                     help="Controls this slug's headline font size.",
                 )
+                current_font_name = str(slug.get("font_name") or "")
+                if current_font_name not in PUBLISHER_SLUG_FONTS:
+                    current_font_name = (
+                        DEFAULT_HINDI_SLUG_FONT
+                        if re.search(r"[\u0900-\u097f]", slug_text)
+                        else DEFAULT_ENGLISH_SLUG_FONT
+                    )
+                slug_font_name = st.selectbox(
+                    "Font type",
+                    list(PUBLISHER_SLUG_FONTS),
+                    index=list(PUBLISHER_SLUG_FONTS).index(current_font_name),
+                    key=f"partner_slug_font_name_{slug_id}",
+                    help=(
+                        "30 publisher-ready fonts: 15 optimised for Hindi/Devanagari "
+                        "and 15 for English headlines."
+                    ),
+                )
                 slug_highlight = st.text_input(
                     "Text to highlight (optional)",
                     value=str(slug.get("highlight_text") or ""),
@@ -5652,7 +6134,7 @@ def main() -> None:
                 )
                 selected_preset = SLUG_STYLE_PRESETS[slug_style]
                 if slug_style == "Custom":
-                    colour_columns = st.columns(2)
+                    colour_columns = st.columns(3)
                     slug_background = colour_columns[0].color_picker(
                         "Panel colour",
                         value=str(
@@ -5668,14 +6150,30 @@ def main() -> None:
                         ),
                         key=f"partner_slug_highlight_colour_{slug_id}",
                     )
+                    slug_text_colour = colour_columns[2].color_picker(
+                        "Font colour",
+                        value=str(
+                            slug.get("text_color") or selected_preset["text"]
+                        ),
+                        key=f"partner_slug_text_colour_{slug_id}",
+                        help="Sets the text colour without adding an outline or border.",
+                    )
                     slug_background_end = slug_background
                 else:
                     slug_background = selected_preset["background"]
                     slug_background_end = selected_preset["background_end"]
                     slug_highlight_colour = selected_preset["accent"]
+                    slug_text_colour = st.color_picker(
+                        "Font colour",
+                        value=str(
+                            slug.get("text_color") or selected_preset["text"]
+                        ),
+                        key=f"partner_slug_text_colour_{slug_id}",
+                        help="Sets the text colour without adding an outline or border.",
+                    )
                     st.caption(
-                        "Preset colours are applied automatically. Choose Custom "
-                        "to select your own panel and accent colours."
+                        "The preset supplies the panel and accent colours. Font "
+                        "colour can be changed independently."
                     )
                 timing_columns = st.columns(2)
                 slug_start = timing_columns[0].number_input(
@@ -5697,7 +6195,7 @@ def main() -> None:
                     step=0.1,
                     key=f"partner_slug_duration_{slug_id}",
                 )
-    
+
                 slug.update(
                     {
                         "text": slug_text.strip(),
@@ -5707,7 +6205,9 @@ def main() -> None:
                         "background_color": slug_background,
                         "background_end_color": slug_background_end,
                         "highlight_color": slug_highlight_colour,
+                        "text_color": slug_text_colour,
                         "font_size": int(slug_font_size),
+                        "font_name": slug_font_name,
                         "start": float(slug_start),
                         "duration": float(slug_duration),
                     }
@@ -5735,6 +6235,7 @@ def main() -> None:
                                 "id": slug_id,
                                 "name": slug_label,
                                 "kind": "slug",
+                                "text_only": slug_style == "Text only",
                                 "src": transparent_overlay_preview_data_url(
                                     str(slug_preview_path),
                                     slug_preview_path.stat().st_mtime_ns,
@@ -5763,7 +6264,7 @@ def main() -> None:
                     key=f"partner_remove_slug_{slug_id}",
                 ):
                     remove_slug_id = slug_id
-    
+
         if remove_slug_id is not None:
             st.session_state["partner_slug_overlays"] = [
                 item for item in slug_items if str(item["id"]) != remove_slug_id
@@ -5771,67 +6272,239 @@ def main() -> None:
             st.rerun()
         st.session_state["partner_slug_overlays"] = slug_items
 
-        if slug_editor_images:
-            st.markdown("**Slug component editor**")
+        # Slugs are regular layers in the one and only video canvas. Prefixing
+        # their ids keeps them distinct from the template's fixed components.
+        unified_canvas_images = list(canvas_images)
+        unified_canvas_layout = list(current_canvas_layout)
+        for slug_image, slug_layout in zip(slug_editor_images, slug_editor_layout):
+            prefixed_slug_id = f"slug:{slug_image['id']}"
+            unified_canvas_images.append(
+                {**slug_image, "id": prefixed_slug_id, "deletable": True}
+            )
+            unified_canvas_layout.append(
+                {**slug_layout, "id": prefixed_slug_id}
+            )
+
+        canvas_voiceover_src = ""
+        if voice_choice == ELEVENLABS_VOICE_LABEL:
+            canvas_voiceover_src = canvas_audio_data_url(
+                st.session_state.get("partner_eleven_preview_bytes"),
+                "audio/mpeg",
+            )
+        elif voice_choice == "Clone producer voice from sample":
+            canvas_voiceover_src = canvas_audio_data_url(
+                st.session_state.get("partner_audio_preview_bytes"),
+                "audio/wav",
+            )
+        elif voice_choice == "Upload completed voiceover":
+            saved_voiceover_value = st.session_state.get("partner_voiceover")
+            if saved_voiceover_value:
+                saved_voiceover_path = Path(str(saved_voiceover_value))
+                if saved_voiceover_path.is_file():
+                    canvas_voiceover_src = canvas_audio_file_data_url(
+                        str(saved_voiceover_path),
+                        saved_voiceover_path.stat().st_mtime_ns,
+                    )
+        if (
+            not canvas_voiceover_src
+            and voice_choice != "No voiceover — use original video audio"
+        ):
+            latest_voiceover_value = st.session_state.get(
+                "partner_voiceover_preview_path"
+            )
+            if latest_voiceover_value:
+                latest_voiceover_path = Path(str(latest_voiceover_value))
+                if latest_voiceover_path.is_file():
+                    canvas_voiceover_src = canvas_audio_file_data_url(
+                        str(latest_voiceover_path),
+                        latest_voiceover_path.stat().st_mtime_ns,
+                    )
+
+        with video_canvas_slot.container():
+            st.markdown("**Video canvas**")
             st.caption(
-                "Every slug is a separate component. Select one, drag it anywhere, "
-                "resize it from any edge or corner, adjust its timing, or remove it. "
-                "The editor never auto-arranges or auto-resizes slug components."
+                "Preview the video here, then drag or resize any visual or slug. "
+                "Slugs appear only on this canvas and are never rendered in a separate editor."
             )
-            slug_editor_result = overlay_layout_editor(
-                images=slug_editor_images,
-                layout=slug_editor_layout,
-                background=video_preview_data_url(
-                    str(source_path), source_path.stat().st_mtime_ns
-                ),
+            template_canvas_result = overlay_layout_editor(
+                images=unified_canvas_images,
+                layout=unified_canvas_layout,
+                background="",
                 video_duration=editor_video_duration,
-                freehand_only=True,
+                spatial_only=True,
                 allow_delete=True,
-                default={"items": slug_editor_layout},
+                voiceover_src=canvas_voiceover_src,
+                voiceover_start=float(voiceover_start),
+                voiceover_pauses=[
+                    {"start": float(start), "duration": float(duration)}
+                    for start, duration in voice_pauses_for_export
+                ],
+                voiceover_volume=1.0,
+                storage_key=(
+                    "partner-template-canvas:"
+                    f"{st.session_state.get('partner_video_signature', source_path.name)}:"
+                    f"{selected_property}:"
+                    f"{st.session_state.get('partner_template_header_upload_generation', 0)}:"
+                    f"{st.session_state.get('partner_template_loop_upload_generation', 0)}:"
+                    f"{st.session_state.get('partner_template_canvas_generation', 0)}"
+                ),
+                default={"items": unified_canvas_layout},
                 key=(
-                    "partner_slug_component_editor_"
-                    f"{st.session_state.get('partner_video_signature', source_path.name)}"
+                    "partner_template_canvas_"
+                    f"{st.session_state.get('partner_video_signature', source_path.name)}_"
+                    f"{selected_property}_"
+                    f"{st.session_state.get('partner_template_canvas_generation', 0)}"
                 ),
             )
-            if isinstance(slug_editor_result, dict):
-                deleted_slug_ids = {
-                    str(value)
-                    for value in slug_editor_result.get("deleted_ids", [])
-                }
+
+        if isinstance(template_canvas_result, dict):
+            deletion_event = str(
+                template_canvas_result.get("deletion_event") or ""
+            )
+            is_new_deletion_event = bool(
+                deletion_event
+                and deletion_event
+                != st.session_state.get("partner_last_canvas_deletion_event")
+            )
+            deleted_ids = {
+                str(value)
+                for value in template_canvas_result.get("deleted_ids", [])
+                if str(value) != "source"
+            }
+            deleted_slug_ids = {
+                value.removeprefix("slug:")
+                for value in deleted_ids
+                if value.startswith("slug:")
+            }
+            deleted_template_ids = {
+                value for value in deleted_ids if not value.startswith("slug:")
+            }
+            if is_new_deletion_event and (deleted_slug_ids or deleted_template_ids):
+                st.session_state["partner_last_canvas_deletion_event"] = deletion_event
+                st.session_state["partner_template_canvas_generation"] = (
+                    int(st.session_state.get("partner_template_canvas_generation", 0))
+                    + 1
+                )
                 if deleted_slug_ids:
-                    st.session_state["partner_slug_overlays"] = [
+                    retained_slug_items = [
                         item
                         for item in slug_items
                         if str(item.get("id")) not in deleted_slug_ids
                     ]
-                    st.rerun()
-                slug_layout_by_id = {
-                    str(entry.get("id")): entry
-                    for entry in slug_editor_result.get("items", [])
-                    if isinstance(entry, dict)
+                    slug_items[:] = retained_slug_items
+                    st.session_state["partner_slug_overlays"] = slug_items
+                if deleted_template_ids:
+                    if "header_image" in deleted_template_ids:
+                        st.session_state.pop("partner_template_header_path", None)
+                        st.session_state.pop("partner_template_header_signature", None)
+                        st.session_state["partner_template_header_upload_generation"] = (
+                            int(
+                                st.session_state.get(
+                                    "partner_template_header_upload_generation", 0
+                                )
+                            )
+                            + 1
+                        )
+                        hidden_template_components.discard("header_image")
+                    if "images" in deleted_template_ids:
+                        st.session_state.pop("partner_template_loop_items", None)
+                        st.session_state.pop("partner_template_loop_signature", None)
+                        st.session_state["partner_template_loop_upload_generation"] = (
+                            int(
+                                st.session_state.get(
+                                    "partner_template_loop_upload_generation", 0
+                                )
+                            )
+                            + 1
+                        )
+                        hidden_template_components.discard("images")
+                    hidden_template_components.update(
+                        deleted_template_ids.difference({"header_image", "images"})
+                    )
+                    st.session_state["partner_template_hidden_components"] = sorted(
+                        hidden_template_components
+                    )
+                st.session_state["partner_template_canvas_layout"] = [
+                    item
+                    for item in template_canvas_result.get("items", [])
+                    if not str(item.get("id")).startswith("slug:")
+                    and str(item.get("id")) not in deleted_template_ids
+                ]
+                # The uploaders were already mounted earlier in this run. A
+                # single explicit rerun remounts them with their incremented
+                # keys, which removes the deleted file chip from the UI.
+                st.rerun()
+
+            result_items = [
+                item
+                for item in template_canvas_result.get("items", [])
+                if isinstance(item, dict)
+            ]
+            template_items = [
+                item
+                for item in result_items
+                if not str(item.get("id")).startswith("slug:")
+            ]
+            if template_items:
+                st.session_state["partner_template_canvas_layout"] = template_items
+
+            # Apply the component result to the export payload in this same run.
+            # Without this synchronization, the canvas could show a new layer
+            # order while the renderer still held the previous logo z-index.
+            latest_template_geometry = {
+                str(item.get("id")): {
+                    key: float(item.get(key) or 0.0)
+                    for key in ("x", "y", "w", "h", "z")
                 }
-                for slug in slug_items:
-                    updated = slug_layout_by_id.get(str(slug.get("id")))
-                    if not updated:
-                        continue
-                    slug["geometry"] = {
-                        "x": clamp_float(float(updated.get("x") or 0.0), 0.0, 0.96),
-                        "y": clamp_float(float(updated.get("y") or 0.0), 0.0, 0.96),
-                        "w": clamp_float(float(updated.get("w") or 0.74), 0.08, 1.0),
-                        "h": clamp_float(float(updated.get("h") or 0.16), 0.08, 1.0),
-                        "z": int(updated.get("z") or 10),
-                    }
-                    slug["start"] = clamp_float(
-                        float(updated.get("start") or 0.0),
-                        0.0,
-                        max(0.0, editor_video_duration - 0.1),
-                    )
-                    slug["duration"] = clamp_float(
-                        float(updated.get("duration") or 5.0),
-                        0.1,
-                        max(0.1, editor_video_duration - float(slug["start"])),
-                    )
-                st.session_state["partner_slug_overlays"] = slug_items
+                for item in template_items
+                if item.get("id")
+            }
+            template_geometry.update(latest_template_geometry)
+            overlay_geometry_ids = {
+                "top-png": "header_image",
+                "property-logo": "logo",
+            }
+            for overlay in image_overlays_for_export:
+                overlay_id = str(overlay.get("id") or "")
+                geometry_id = overlay_geometry_ids.get(overlay_id)
+                if overlay_id.startswith("template-loop-"):
+                    geometry_id = "images"
+                updated_geometry = latest_template_geometry.get(
+                    str(geometry_id or "")
+                )
+                if not updated_geometry:
+                    continue
+                for key in ("x", "y", "w", "h"):
+                    overlay[key] = float(updated_geometry[key])
+                overlay["z"] = int(updated_geometry["z"])
+
+            slug_layout_by_id = {
+                str(item.get("id")).removeprefix("slug:"): item
+                for item in result_items
+                if str(item.get("id")).startswith("slug:")
+            }
+            for slug in slug_items:
+                updated = slug_layout_by_id.get(str(slug.get("id")))
+                if not updated:
+                    continue
+                slug["geometry"] = {
+                    "x": clamp_float(float(updated.get("x") or 0.0), 0.0, 0.96),
+                    "y": clamp_float(float(updated.get("y") or 0.0), 0.0, 0.96),
+                    "w": clamp_float(float(updated.get("w") or 0.74), 0.08, 1.0),
+                    "h": clamp_float(float(updated.get("h") or 0.16), 0.08, 1.0),
+                    "z": int(updated.get("z") or 10),
+                }
+                slug["start"] = clamp_float(
+                    float(updated.get("start") or 0.0),
+                    0.0,
+                    max(0.0, editor_video_duration - 0.1),
+                )
+                slug["duration"] = clamp_float(
+                    float(updated.get("duration") or 5.0),
+                    0.1,
+                    max(0.1, editor_video_duration - float(slug["start"])),
+                )
+            st.session_state["partner_slug_overlays"] = slug_items
 
         # Use the editor-updated geometry/timing in the export created during
         # this same Streamlit run; do not wait for another interaction/rerun.
@@ -5840,7 +6513,7 @@ def main() -> None:
             for item in slug_items
             if str(item.get("text") or "").strip()
         ]
-    
+
         ordered_slugs = sorted(
             slugs_for_export,
             key=lambda item: (float(item.get("start") or 0.0), int(item["id"])),
@@ -5856,7 +6529,7 @@ def main() -> None:
 
         st.divider()
         if st.button(
-            "Continue to Review & Export →",
+            "Continue to Publish →",
             type="primary",
             use_container_width=True,
             key="partner_continue_to_review",
@@ -5866,7 +6539,7 @@ def main() -> None:
                 <script>
                 const tabs = window.parent.document.querySelectorAll('[role="tab"]');
                 const reviewTab = Array.from(tabs).find(
-                    (tab) => tab.textContent.trim() === 'Review & export'
+                    (tab) => tab.textContent.trim() === 'Publish'
                 );
                 if (reviewTab) reviewTab.click();
                 </script>
@@ -5874,84 +6547,14 @@ def main() -> None:
                 height=0,
             )
 
-    with workspace_tabs[3]:
+    with workspace_tabs[2]:
         render_stage_header(
             6,
-            "Review and export",
-            "Render the finished story and prepare the full-resolution master for download.",
+            "Publish",
+            "Render the finished story, then generate and review its publishing metadata.",
         )
-        st.markdown("### Gemini title and SEO metadata")
-        st.caption(
-            "Gemini analyses the approved transcript plus representative frames "
-            "from the raw video, top PNG and floating media. Review every field before publishing."
-        )
-        metadata_language = st.radio(
-            "Generate metadata in",
-            ["Hindi", "English", "Hindi + English"],
-            horizontal=True,
-            key="partner_metadata_language",
-        )
-        metadata_action_columns = st.columns([0.72, 0.28], vertical_alignment="center")
-        metadata_action_columns[0].caption(
-            f"Model: {VERTEX_GEMINI_MODEL} on Vertex AI · maximum 20 meta tags"
-        )
-        if metadata_action_columns[1].button(
-            "Generate with Gemini",
-            type="primary",
-            use_container_width=True,
-            key="partner_generate_video_metadata",
-            disabled=not bool(edited_transcript.strip()),
-        ):
-            with st.spinner("Analysing the transcript and video visuals..."):
-                generated_metadata, metadata_message = generate_video_metadata_with_gemini(
-                    edited_transcript,
-                    metadata_language,
-                    source_path,
-                    template_header_path if template_header_path.is_file() else None,
-                    template_loop_items,
-                )
-            if generated_metadata:
-                st.session_state["partner_generated_title"] = generated_metadata["title"]
-                st.session_state["partner_generated_headline"] = generated_metadata["headline"]
-                st.session_state["partner_generated_description"] = generated_metadata["description"]
-                st.session_state["partner_generated_meta_tags"] = ", ".join(
-                    generated_metadata["meta_tags"]
-                )
-                st.session_state["partner_metadata_message"] = metadata_message
-                st.rerun()
-            st.error(metadata_message)
-        if st.session_state.get("partner_metadata_message"):
-            st.success(st.session_state["partner_metadata_message"])
-        title_column, headline_column = st.columns(2)
-        generated_title = title_column.text_input(
-            "Video title",
-            key="partner_generated_title",
-            placeholder="Generate or enter the publishing title",
-        )
-        generated_headline = headline_column.text_input(
-            "Headline",
-            key="partner_generated_headline",
-            placeholder="Generate or enter the newsroom headline",
-        )
-        generated_description = st.text_area(
-            "Description",
-            key="partner_generated_description",
-            height=110,
-            placeholder="Generate or enter the publishing description",
-        )
-        generated_meta_tags = st.text_area(
-            "Keywords / meta tags — comma separated",
-            key="partner_generated_meta_tags",
-            height=80,
-            placeholder="tag one, tag two, tag three",
-        )
-        parsed_meta_tags = [
-            tag.strip().lstrip("#")
-            for tag in re.split(r"[,\n]", generated_meta_tags)
-            if tag.strip()
-        ][:20]
-        st.caption(f"{len(parsed_meta_tags)}/20 meta tags · all fields remain editable")
-        st.divider()
+        # Publishing metadata is intentionally rendered only after a completed
+        # video exists, below that video's player and download controls.
         if voice_choice == ELEVENLABS_VOICE_LABEL:
             voice_ready = bool(
                 elevenlabs_api_key()
@@ -6049,7 +6652,12 @@ def main() -> None:
                 if not voiceover_path:
                     st.error(voice_message)
                     return
-    
+
+            if voiceover_path and Path(voiceover_path).is_file():
+                st.session_state["partner_voiceover_preview_path"] = str(
+                    voiceover_path
+                )
+
             pause_audio_overlays_for_export: List[Dict[str, object]] = []
             for pause_index, pause in enumerate(voice_pause_items):
                 insert_mode = str(pause.get("insert_mode") or "silent")
@@ -6123,7 +6731,7 @@ def main() -> None:
                         "duration": pause_duration,
                     }
                 )
-    
+
             render_source_path = source_path
             if source_cuts_for_export:
                 with st.spinner("Removing sections from the uploaded raw video..."):
@@ -6135,14 +6743,14 @@ def main() -> None:
                     st.error(cut_message)
                     return
                 st.success(cut_message)
-    
+
             with st.spinner("Composing voiceover and overlays on the edited raw video..."):
                 output, message = export_horizontal_video(
                     render_source_path,
                     edited_transcript,
                     voiceover_path,
-                    keep_original_audio=(
-                        voice_choice == "No voiceover — use original video audio"
+                    keep_original_audio=bool(
+                        raw_audio_settings_for_export.get("enabled")
                     ),
                     add_intro_slate=False,
                     image_overlays=image_overlays_for_export,
@@ -6154,23 +6762,9 @@ def main() -> None:
                     pause_audio_overlays=pause_audio_overlays_for_export,
                     template_layout=template_layout,
                     template_geometry=template_geometry,
+                    raw_audio_settings=raw_audio_settings_for_export,
                 )
             if output:
-                metadata_sidecar = output.with_suffix(".metadata.json")
-                metadata_sidecar.write_text(
-                    json.dumps(
-                        {
-                            "title": generated_title.strip(),
-                            "headline": generated_headline.strip(),
-                            "description": generated_description.strip(),
-                            "meta_tags": parsed_meta_tags,
-                            "language_mode": metadata_language,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
                 st.session_state["partner_latest_export"] = str(output)
                 st.session_state["partner_latest_preview"] = str(output)
                 st.session_state["partner_latest_export_message"] = message
@@ -6187,7 +6781,7 @@ def main() -> None:
                 st.rerun()
             else:
                 st.error(message)
-    
+
         if not st.session_state.get("partner_latest_export"):
             previous_exports = sorted(
                 EXPORT_DIR.glob(f"{source_path.stem}_ai_anchor_horizontal*.mp4"),
@@ -6204,7 +6798,7 @@ def main() -> None:
                 st.session_state["partner_latest_export_message"] = (
                     f"Latest generated video: {recovered_export.name}"
                 )
-    
+
         latest_export_value = st.session_state.get("partner_latest_export")
         latest_preview_value = st.session_state.get("partner_latest_preview")
         if latest_export_value:
@@ -6241,11 +6835,114 @@ def main() -> None:
                             key=f"partner_download_{latest_export.name}",
                             on_click="ignore",
                         )
+
+                st.divider()
+                st.markdown("### Gemini title and SEO metadata")
+                st.caption(
+                    "Gemini analyses the approved transcript and representative "
+                    "frames from this completed render. Review every field before publishing."
+                )
+                metadata_language = st.radio(
+                    "Generate metadata in",
+                    ["Hindi", "English", "Hindi + English"],
+                    horizontal=True,
+                    key="partner_metadata_language",
+                )
+                metadata_action_columns = st.columns(
+                    [0.72, 0.28], vertical_alignment="center"
+                )
+                metadata_action_columns[0].caption(
+                    f"Model: {VERTEX_GEMINI_MODEL} on Vertex AI · maximum 20 meta tags"
+                )
+                if metadata_action_columns[1].button(
+                    "Generate from render",
+                    type="primary",
+                    use_container_width=True,
+                    key="partner_generate_video_metadata",
+                    disabled=not bool(edited_transcript.strip()),
+                ):
+                    with st.spinner("Analysing the transcript and rendered visuals..."):
+                        generated_metadata, metadata_message = (
+                            generate_video_metadata_with_gemini(
+                                edited_transcript,
+                                metadata_language,
+                                latest_export,
+                                (
+                                    template_header_path
+                                    if template_header_path.is_file()
+                                    else None
+                                ),
+                                template_loop_items,
+                            )
+                        )
+                    if generated_metadata:
+                        st.session_state["partner_generated_title"] = (
+                            generated_metadata["title"]
+                        )
+                        st.session_state["partner_generated_headline"] = (
+                            generated_metadata["headline"]
+                        )
+                        st.session_state["partner_generated_description"] = (
+                            generated_metadata["description"]
+                        )
+                        st.session_state["partner_generated_meta_tags"] = ", ".join(
+                            generated_metadata["meta_tags"]
+                        )
+                        st.session_state["partner_metadata_message"] = metadata_message
+                        st.rerun()
+                    st.error(metadata_message)
+                if st.session_state.get("partner_metadata_message"):
+                    st.success(st.session_state["partner_metadata_message"])
+                title_column, headline_column = st.columns(2)
+                generated_title = title_column.text_input(
+                    "Video title",
+                    key="partner_generated_title",
+                    placeholder="Generate or enter the publishing title",
+                )
+                generated_headline = headline_column.text_input(
+                    "Headline",
+                    key="partner_generated_headline",
+                    placeholder="Generate or enter the newsroom headline",
+                )
+                generated_description = st.text_area(
+                    "Description",
+                    key="partner_generated_description",
+                    height=110,
+                    placeholder="Generate or enter the publishing description",
+                )
+                generated_meta_tags = st.text_area(
+                    "Keywords / meta tags — comma separated",
+                    key="partner_generated_meta_tags",
+                    height=80,
+                    placeholder="tag one, tag two, tag three",
+                )
+                parsed_meta_tags = [
+                    tag.strip().lstrip("#")
+                    for tag in re.split(r"[,\n]", generated_meta_tags)
+                    if tag.strip()
+                ][:20]
+                st.caption(
+                    f"{len(parsed_meta_tags)}/20 meta tags · all fields remain editable"
+                )
+                latest_export.with_suffix(".metadata.json").write_text(
+                    json.dumps(
+                        {
+                            "title": generated_title.strip(),
+                            "headline": generated_headline.strip(),
+                            "description": generated_description.strip(),
+                            "meta_tags": parsed_meta_tags,
+                            "language_mode": metadata_language,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
             else:
                 st.session_state.pop("partner_latest_export", None)
                 st.session_state.pop("partner_latest_preview", None)
                 st.session_state.pop("partner_latest_export_message", None)
-    
-    
+
+
 if __name__ == "__main__":
     main()

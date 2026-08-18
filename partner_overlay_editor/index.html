@@ -151,6 +151,34 @@
     .time-handle.left { left: 0; border-radius: 6px 2px 2px 6px; }
     .time-handle.right { right: 0; border-radius: 2px 6px 6px 2px; }
     .time-labels { display: flex; justify-content: space-between; color: #858d9a; font-size: 10px; margin-top: 4px; }
+    .sequence-panel {
+      margin-top: 10px; padding: 10px; border: 1px solid #343b48; border-radius: 9px;
+      background: #111620;
+    }
+    .sequence-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+    .sequence-title { color:#d9dde5; font-size:12px; font-weight:850; letter-spacing:.06em; }
+    .sequence-tools { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .sequence-tools button { padding:5px 9px; font-size:10px; }
+    .sequence-tools .danger { color:#ff9a9a; border-color:#704049; }
+    .source-time { min-width:94px; color:#9ba5b5; font-size:10px; text-align:right; }
+    .source-scrubber { width:100%; accent-color:#ff4b4b; cursor:pointer; }
+    .track-stack { margin-top:7px; display:grid; gap:4px; }
+    .editor-track { display:grid; grid-template-columns:74px 1fr; gap:7px; align-items:center; }
+    .track-name { color:#8f98a7; font-size:9px; font-weight:800; letter-spacing:.05em; text-align:right; }
+    .track-lane { position:relative; height:24px; overflow:hidden; border:1px solid #303744; border-radius:5px; background:#1c222d; }
+    .track-segment, .sequence-segment { position:absolute; top:3px; bottom:3px; min-width:3px; border:0; border-radius:3px; background:#337fc5; opacity:.95; color:#fff; font-size:8px; text-align:left; overflow:hidden; white-space:nowrap; padding:0 5px; }
+    .track-segment.media { background:#8d5bd0; }
+    .track-segment.slug { background:#d94c52; }
+    .track-segment.voice { background:#2f9d67; }
+    .track-segment.cut, .cut-segment { position:absolute; top:0; bottom:0; z-index:10; background:repeating-linear-gradient(135deg,#8e2632 0,#8e2632 6px,#c53c48 6px,#c53c48 12px); }
+    .source-bed { background:#337fc5; }
+    .visual-segment { background:#8d5bd0; }
+    .slug-segment { background:#d94c52; }
+    .voice-segment { background:#2f9d67; }
+    .track-playhead, .sequence-playhead { position:absolute; top:0; bottom:0; width:2px; z-index:30; background:#f5e663; box-shadow:0 0 0 1px rgba(0,0,0,.5); pointer-events:none; }
+    .mark-summary { margin-top:6px; color:#9ca5b4; font-size:10px; }
+    .cut-chip-list { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
+    .cut-chip { padding:3px 6px; border-radius:999px; background:#3b1d24; color:#ffadb4; border:1px solid #63323b; font-size:9px; }
     @media (max-width: 640px) { .fields { grid-template-columns: 1fr 1fr; } .field.end { display: none; } }
   </style>
 </head>
@@ -193,6 +221,26 @@
       <p class="hint">Arrow keys move 1px-equivalent. Hold Shift for larger steps.</p>
     </aside>
   </div>
+  <section class="sequence-panel" aria-label="Editor timeline">
+    <div class="sequence-head">
+      <div class="sequence-title">TIMELINE · SOURCE TRIM & AUDIO</div>
+      <div class="sequence-tools">
+        <button type="button" id="markCutIn">Mark in</button>
+        <button type="button" id="markCutOut">Mark out</button>
+        <button type="button" id="removeMarkedRange" class="danger">Remove marked range</button>
+        <span id="sourceTime" class="source-time">0:00.0 / 0:00.0</span>
+      </div>
+    </div>
+    <input id="sourceScrubber" class="source-scrubber" type="range" min="0" max="60" value="0" step="0.05" aria-label="Raw video playhead">
+    <div class="track-stack">
+      <div class="editor-track"><div class="track-name">RAW VIDEO</div><div id="sourceTrack" class="track-lane"></div></div>
+      <div class="editor-track"><div class="track-name">VISUALS</div><div id="visualTrack" class="track-lane"></div></div>
+      <div class="editor-track"><div class="track-name">SLUGS</div><div id="slugTrack" class="track-lane"></div></div>
+      <div class="editor-track"><div class="track-name">VOICEOVER</div><div id="voiceTrack" class="track-lane"></div></div>
+    </div>
+    <div id="markSummary" class="mark-summary">Move the playhead, mark an in and out point, then remove that section from the raw video.</div>
+    <div id="cutChipList" class="cut-chip-list"></div>
+  </section>
   <div class="hint">Edit mode keeps every slug visible and shows other media at the selected layer's start time. Play the video preview to inspect true timing.</div>
   <div id="imageStrip" class="strip"></div>
   <div id="timingCard" class="timing-card">
@@ -232,6 +280,14 @@
     const layerList = document.getElementById("layerList");
     const canvasFrame = document.getElementById("canvasFrame");
     const voiceoverTrack = document.getElementById("voiceoverTrack");
+    const sourceScrubber = document.getElementById("sourceScrubber");
+    const sourceTime = document.getElementById("sourceTime");
+    const sourceTrack = document.getElementById("sourceTrack");
+    const visualTrack = document.getElementById("visualTrack");
+    const slugTrack = document.getElementById("slugTrack");
+    const voiceTrack = document.getElementById("voiceTrack");
+    const markSummary = document.getElementById("markSummary");
+    const cutChipList = document.getElementById("cutChipList");
     const inspectX = document.getElementById("inspectX"), inspectY = document.getElementById("inspectY");
     const inspectW = document.getElementById("inspectW"), inspectH = document.getElementById("inspectH");
     let args = { images: [], layout: [], background: "", video_duration: 60 };
@@ -246,12 +302,17 @@
     let dirty = false;
     let pendingDeletedIds = [];
     let storageKey = "";
+    let sourceCuts = [];
+    let sourcePlayhead = 0;
+    let cutMarkIn = null;
+    let cutMarkOut = null;
 
     const post = (type, payload = {}) => window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
     const ready = () => post("streamlit:componentReady", {apiVersion: 1});
     const setHeight = () => post("streamlit:setFrameHeight", {height: Math.ceil(document.body.scrollHeight + 4)});
     const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
     const videoDuration = () => Math.max(.1, Number(args.video_duration) || 60);
+    const sourceDuration = () => Math.max(.1, Number(args.source_duration) || videoDuration());
     const previewButtonLabel = () => voiceoverSource
       ? "▶ Play preview with voiceover"
       : "▶ Play video preview";
@@ -293,6 +354,10 @@
       ({id,x,y,w,h,z,start,duration,locked}) =>
         ({id,x,y,w,h,z,start,duration,locked:Boolean(locked)})
     );
+    const serialisedCuts = () => sourceCuts.map(cut => ({
+      start: Number(cut.start) || 0,
+      end: Number(cut.end) || 0
+    }));
     const readDurableState = () => {
       if (!storageKey) return null;
       try { return JSON.parse(window.localStorage.getItem(storageKey) || "null"); }
@@ -307,13 +372,19 @@
         }));
       } catch (_) {}
     };
-    const commit = (deletedIds = [], deletionEvent = "") => {
+    const commit = (deletedIds = [], deletionEvent = "", cutEvent = "") => {
       const allDeletedIds = [...new Set([...pendingDeletedIds, ...deletedIds].map(String))];
       const items = serialisedLayout();
       writeDurableState(allDeletedIds, items);
       setDirty(false);
       post("streamlit:setComponentValue", {
-        value: {items, deleted_ids: allDeletedIds, deletion_event: deletionEvent},
+        value: {
+          items,
+          deleted_ids: allDeletedIds,
+          deletion_event: deletionEvent,
+          source_cuts: serialisedCuts(),
+          cut_event: cutEvent
+        },
         dataType: "json"
       });
     };
@@ -402,6 +473,72 @@
       inspectW.value=(item.w*100).toFixed(1); inspectH.value=(item.h*100).toFixed(1);
     }
 
+    function playlistFrame(image, elapsed = 0) {
+      const playlist = Array.isArray(image?.playlist) && image.playlist.length
+        ? image.playlist
+        : [image || {}];
+      const durations = playlist.map(asset => Math.max(.1, Number(asset.duration) || videoDuration()));
+      const cycleDuration = durations.reduce((total, duration) => total + duration, 0);
+      let cursor = cycleDuration > 0 ? Math.max(0, elapsed) % cycleDuration : 0;
+      for (let index = 0; index < playlist.length; index += 1) {
+        if (cursor < durations[index] || index === playlist.length - 1) {
+          return {asset: playlist[index], index, localTime: cursor};
+        }
+        cursor -= durations[index];
+      }
+      return {asset: playlist[0], index: 0, localTime: 0};
+    }
+
+    function applyTileMedia(tile, image, elapsed = 0, shouldPlay = false) {
+      const frame = playlistFrame(image, elapsed);
+      const asset = frame.asset || image || {};
+      const kind = String(asset.kind || image?.kind || "image");
+      const blur = tile.querySelector(".blur");
+      const still = tile.querySelector(".tile-image");
+      const video = tile.querySelector("video.tile-video");
+      const playButton = tile.querySelector(".tile-play");
+      const source = String(asset.src || image?.src || "");
+      if (blur && blur.src !== source) blur.src = source;
+      if (kind === "video" && asset.video_src) {
+        still.style.display = "none";
+        video.style.display = "block";
+        playButton.style.display = previewing ? "none" : "grid";
+        if (video.dataset.playlistIndex !== String(frame.index) || video.src !== asset.video_src) {
+          video.pause();
+          video.dataset.playlistIndex = String(frame.index);
+          video.src = asset.video_src;
+          video.poster = source;
+          video.load();
+        }
+        video.loop = !Array.isArray(image?.playlist) || image.playlist.length <= 1;
+        const previewVolume = clamp(Number(asset.preview_volume ?? image?.preview_volume) || 0, 0, 1);
+        video.volume = previewVolume;
+        video.muted = previewVolume <= 0;
+        if (video.readyState >= 1 && Math.abs((video.currentTime || 0) - frame.localTime) > .35) {
+          try {
+            video.currentTime = Math.min(
+              frame.localTime,
+              Math.max(0, (video.duration || frame.localTime) - .03)
+            );
+          } catch (_) {}
+        }
+        if (shouldPlay && video.paused) video.play().catch(() => {});
+      } else {
+        video.pause();
+        video.style.display = "none";
+        playButton.style.display = "none";
+        still.style.display = "block";
+        if (still.src !== source) still.src = source;
+      }
+      tile.querySelector(".tile-name").textContent = asset.name || image?.name || "Visual";
+      tile.querySelector(".media-kind").textContent = (
+        Array.isArray(image?.playlist) && image.playlist.length > 1
+          ? `${kind.toUpperCase()} ${frame.index + 1}/${image.playlist.length}`
+          : kind.toUpperCase()
+      );
+      return frame;
+    }
+
     function renderStage() {
       stage.innerHTML = '<span class="guide v" id="guideV"></span><span class="guide h" id="guideH"></span>';
       stage.style.backgroundImage = args.background ? `linear-gradient(rgba(8,10,15,.28),rgba(8,10,15,.28)),url('${args.background}')` : "";
@@ -417,38 +554,25 @@
         tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}`;
         tile.dataset.id = String(item.id);
         Object.assign(tile.style, {left:`${item.x*100}%`, top:`${item.y*100}%`, width:`${item.w*100}%`, height:`${item.h*100}%`, zIndex:item.z});
-        const playableVideo = image.kind === "video" && Boolean(image.video_src);
-        const sharpMedia = playableVideo
-          ? `<video class="sharp tile-video" muted playsinline preload="metadata" poster="${image.src || ""}"></video><button type="button" class="tile-play" title="Play video preview" aria-label="Play video preview">▶</button>`
-          : `<img class="sharp" draggable="false" src="${image.src}">`;
-        tile.innerHTML = `<img class="blur" draggable="false" src="${image.src}">${sharpMedia}<span class="tile-name"></span><span class="media-kind"></span><span class="resize n" data-resize="n"></span><span class="resize ne" data-resize="ne"></span><span class="resize e" data-resize="e"></span><span class="resize se" data-resize="se"></span><span class="resize s" data-resize="s"></span><span class="resize sw" data-resize="sw"></span><span class="resize w" data-resize="w"></span><span class="resize nw" data-resize="nw"></span>`;
-        if (playableVideo) {
-          const video = tile.querySelector(".tile-video");
-          const playButton = tile.querySelector(".tile-play");
-          video.src = image.video_src;
-          video.loop = String(image.id) !== "source";
-          const previewVolume = clamp(Number(image.preview_volume) || 0, 0, 1);
-          video.volume = previewVolume;
-          video.muted = previewVolume <= 0;
-          playButton.addEventListener("pointerdown", event => event.stopPropagation());
-          playButton.addEventListener("click", async event => {
-            event.preventDefault(); event.stopPropagation();
-            if (video.paused) {
-              stage.querySelectorAll("video.tile-video").forEach(other => {
-                if (other !== video) other.pause();
-              });
-              try { await video.play(); } catch (_) { return; }
-            } else {
-              video.pause();
-            }
-          });
-          video.addEventListener("play", () => { playButton.textContent = "❚❚"; });
-          video.addEventListener("pause", () => { playButton.textContent = "▶"; });
-          video.addEventListener("ended", () => { playButton.textContent = "▶"; });
-        }
-        tile.querySelector(".tile-name").textContent = image.name || `Image ${item.id}`;
-        const kind = image.kind === "video" ? "VIDEO" : image.kind === "slug" ? "SLUG" : "IMAGE";
-        tile.querySelector(".media-kind").textContent = kind;
+        tile.innerHTML = `<img class="blur" draggable="false"><img class="sharp tile-image" draggable="false"><video class="sharp tile-video" muted playsinline preload="metadata"></video><button type="button" class="tile-play" title="Play video preview" aria-label="Play video preview">▶</button><span class="tile-name"></span><span class="media-kind"></span><span class="resize n" data-resize="n"></span><span class="resize ne" data-resize="ne"></span><span class="resize e" data-resize="e"></span><span class="resize se" data-resize="se"></span><span class="resize s" data-resize="s"></span><span class="resize sw" data-resize="sw"></span><span class="resize w" data-resize="w"></span><span class="resize nw" data-resize="nw"></span>`;
+        const video = tile.querySelector(".tile-video");
+        const playButton = tile.querySelector(".tile-play");
+        playButton.addEventListener("pointerdown", event => event.stopPropagation());
+        playButton.addEventListener("click", async event => {
+          event.preventDefault(); event.stopPropagation();
+          if (video.paused) {
+            stage.querySelectorAll("video.tile-video").forEach(other => {
+              if (other !== video) other.pause();
+            });
+            try { await video.play(); } catch (_) { return; }
+          } else {
+            video.pause();
+          }
+        });
+        video.addEventListener("play", () => { playButton.textContent = "❚❚"; });
+        video.addEventListener("pause", () => { playButton.textContent = "▶"; });
+        video.addEventListener("ended", () => { playButton.textContent = "▶"; });
+        applyTileMedia(tile, image, previewing ? Math.max(0, previewTime - item.start) : 0, false);
         tile.addEventListener("pointerdown", event => beginSpatial(event, item, event.target.dataset.resize || "move"));
         stage.appendChild(tile);
       });
@@ -494,7 +618,76 @@
       timeBar.style.width = `${item.duration / videoDuration() * 100}%`;
     }
 
-    function renderAll() { renderStage(); renderLayers(); renderInspector(); renderStrip(); renderTiming(); setHeight(); }
+    function renderSequence() {
+      const sourceLength = sourceDuration();
+      sourceScrubber.max = String(sourceLength);
+      sourceScrubber.value = String(clamp(sourcePlayhead, 0, sourceLength));
+      sourceTime.textContent = `${formatTime(sourcePlayhead)} / ${formatTime(sourceLength)}`;
+      const renderSegments = (host, predicate, className) => {
+        host.innerHTML = "";
+        layout.filter(item => predicate(imageFor(item.id))).forEach(item => {
+          const segment = document.createElement("button");
+          segment.type = "button";
+          segment.className = `sequence-segment ${className}`;
+          segment.style.left = `${item.start / videoDuration() * 100}%`;
+          segment.style.width = `${Math.max(.5, item.duration / videoDuration() * 100)}%`;
+          segment.textContent = imageFor(item.id)?.name || "Visual";
+          segment.onclick = () => selectImage(item.id);
+          host.appendChild(segment);
+        });
+      };
+      sourceTrack.innerHTML = "";
+      const sourceBed = document.createElement("div");
+      sourceBed.className = "sequence-segment source-bed";
+      sourceBed.style.left = "0"; sourceBed.style.width = "100%";
+      sourceBed.textContent = "Uploaded raw video";
+      sourceTrack.appendChild(sourceBed);
+      sourceCuts.forEach(cut => {
+        const removed = document.createElement("div");
+        removed.className = "cut-segment";
+        removed.style.left = `${cut.start / sourceLength * 100}%`;
+        removed.style.width = `${Math.max(.4, (cut.end - cut.start) / sourceLength * 100)}%`;
+        removed.title = `Removed ${formatTime(cut.start)}–${formatTime(cut.end)}`;
+        sourceTrack.appendChild(removed);
+      });
+      renderSegments(visualTrack, image => image && image.kind !== "slug" && image.id !== "source", "visual-segment");
+      renderSegments(slugTrack, image => image && image.kind === "slug", "slug-segment");
+      voiceTrack.innerHTML = "";
+      if (voiceoverSource) {
+        const voice = document.createElement("div");
+        voice.className = "sequence-segment voice-segment";
+        const voiceStart = clamp(Number(args.voiceover_start) || 0, 0, videoDuration());
+        voice.style.left = `${voiceStart / videoDuration() * 100}%`;
+        voice.style.width = `${Math.max(.5, (videoDuration() - voiceStart) / videoDuration() * 100)}%`;
+        voice.textContent = "Generated voiceover";
+        voiceTrack.appendChild(voice);
+      }
+      document.querySelectorAll(".sequence-playhead").forEach(node => node.remove());
+      [sourceTrack, visualTrack, slugTrack, voiceTrack].forEach(host => {
+        const playhead = document.createElement("span");
+        playhead.className = "sequence-playhead";
+        playhead.style.left = `${clamp(sourcePlayhead / sourceLength, 0, 1) * 100}%`;
+        host.appendChild(playhead);
+      });
+      markSummary.textContent = cutMarkIn == null
+        ? "Set an In point, move the playhead, then set Out."
+        : cutMarkOut == null
+          ? `In ${formatTime(cutMarkIn)} · choose an Out point`
+          : `Marked ${formatTime(Math.min(cutMarkIn, cutMarkOut))}–${formatTime(Math.max(cutMarkIn, cutMarkOut))}`;
+      cutChipList.innerHTML = "";
+      sourceCuts.forEach((cut, index) => {
+        const chip = document.createElement("button");
+        chip.type = "button"; chip.className = "cut-chip";
+        chip.textContent = `Remove ${formatTime(cut.start)}–${formatTime(cut.end)} ×`;
+        chip.onclick = () => {
+          sourceCuts.splice(index, 1); renderSequence();
+          commit([], "", `${Date.now()}:restore:${index}`);
+        };
+        cutChipList.appendChild(chip);
+      });
+    }
+
+    function renderAll() { renderStage(); renderLayers(); renderInspector(); renderStrip(); renderTiming(); renderSequence(); setHeight(); }
 
     function updateCompositionFrame(timestamp) {
       if (!previewing) return;
@@ -505,16 +698,9 @@
         const visible = previewTime >= item.start && previewTime < item.start + item.duration;
         tile.style.display = visible ? "block" : "none";
         const video = tile.querySelector("video.tile-video");
-        if (!video) return;
-        if (!visible) { video.pause(); return; }
+        if (!visible) { if (video) video.pause(); return; }
         const elapsed = Math.max(0, previewTime - item.start);
-        const expected = (
-          video.loop && Number.isFinite(video.duration) && video.duration > 0
-        ) ? elapsed % video.duration : elapsed;
-        if (video.readyState >= 1 && Math.abs((video.currentTime || 0) - expected) > .35) {
-          try { video.currentTime = Math.min(expected, Math.max(0, (video.duration || expected) - .03)); } catch (_) {}
-        }
-        if (video.paused) video.play().catch(() => {});
+        applyTileMedia(tile, imageFor(item.id), elapsed, true);
       });
       if (voiceoverSource) {
         const voiceStart = Math.max(0, Number(args.voiceover_start) || 0);
@@ -551,6 +737,8 @@
         }
       }
       previewMeta.textContent = `Preview ${formatTime(previewTime)} / ${formatTime(videoDuration())}`;
+      sourcePlayhead = Math.min(sourceDuration(), previewTime);
+      renderSequence();
       if (previewTime >= videoDuration() - .01) {
         stopCompositionPreview();
         return;
@@ -722,6 +910,43 @@
       commit([deleted], `${Date.now()}:${deleted}:${Math.random()}`);
     });
 
+    function mergeSourceCuts(cuts) {
+      const limit = sourceDuration();
+      const ordered = cuts.map(cut => ({
+        start: clamp(Number(cut.start) || 0, 0, limit),
+        end: clamp(Number(cut.end) || 0, 0, limit)
+      })).filter(cut => cut.end - cut.start >= .05).sort((a, b) => a.start - b.start);
+      return ordered.reduce((merged, cut) => {
+        const last = merged[merged.length - 1];
+        if (last && cut.start <= last.end + .01) last.end = Math.max(last.end, cut.end);
+        else merged.push({...cut});
+        return merged;
+      }, []);
+    }
+
+    function seekSourcePreview(value) {
+      sourcePlayhead = clamp(Number(value) || 0, 0, sourceDuration());
+      const sourceTile = stage.querySelector('.tile[data-id="source"]');
+      const sourceVideo = sourceTile?.querySelector("video.tile-video");
+      if (sourceVideo && sourceVideo.readyState >= 1) {
+        try { sourceVideo.currentTime = Math.min(sourcePlayhead, Math.max(0, (sourceVideo.duration || sourcePlayhead) - .03)); } catch (_) {}
+      }
+      renderSequence();
+    }
+    sourceScrubber.addEventListener("input", event => seekSourcePreview(event.target.value));
+    document.getElementById("markCutIn").onclick = () => { cutMarkIn = sourcePlayhead; cutMarkOut = null; renderSequence(); };
+    document.getElementById("markCutOut").onclick = () => { cutMarkOut = sourcePlayhead; renderSequence(); };
+    document.getElementById("removeMarkedRange").onclick = () => {
+      if (cutMarkIn == null || cutMarkOut == null) return;
+      const start = Math.min(cutMarkIn, cutMarkOut);
+      const end = Math.max(cutMarkIn, cutMarkOut);
+      if (end - start < .05) return;
+      sourceCuts = mergeSourceCuts([...sourceCuts, {start, end}]);
+      cutMarkIn = null; cutMarkOut = null;
+      renderSequence();
+      commit([], "", `${Date.now()}:cut:${start.toFixed(3)}:${end.toFixed(3)}`);
+    };
+
     window.addEventListener("message", event => {
       if(event.data?.type!=="streamlit:render") return;
       const rawNextArgs=event.data.args||args;
@@ -749,6 +974,9 @@
       // byte size—must control layout resets so freehand geometry is preserved.
       const nextSignature=(nextArgs.images||[]).map(image=>`${image.id}:${image.kind||"image"}`).join("|");
       args=nextArgs;
+      const incomingCuts = Array.isArray(args.source_cuts) ? args.source_cuts : [];
+      sourceCuts = mergeSourceCuts(incomingCuts);
+      sourcePlayhead = clamp(sourcePlayhead, 0, sourceDuration());
       const nextVoiceoverSource = String(args.voiceover_src || "");
       if (nextVoiceoverSource !== voiceoverSource) {
         voiceoverSource = nextVoiceoverSource;

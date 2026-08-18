@@ -3740,7 +3740,7 @@ def main() -> None:
             top: .65rem;
             z-index: 50;
             display: grid !important;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             gap: .55rem;
             padding: .5rem !important;
             margin: 1.15rem 0 .4rem;
@@ -5094,22 +5094,79 @@ def main() -> None:
             first_floating_type = "image"
             loop_preview_src = ""
         if template_loop_paths_for_editor and "images" not in hidden_template_components:
-            floating_preview_volume = 0.0
-            if first_floating_type == "video" and bool(
-                template_loop_items[0].get("use_clip_audio")
-            ):
-                stored_floating_volume = template_loop_items[0].get("audio_volume")
-                floating_preview_volume = clamp_float(
-                    float(
-                        1.0
-                        if stored_floating_volume is None
-                        else stored_floating_volume
-                    ),
-                    0.0,
-                    1.0,
+            floating_playlist = []
+            for floating_item in template_loop_items:
+                floating_path = Path(str(floating_item["path"]))
+                floating_type = str(
+                    floating_item.get("media_type") or "image"
                 )
+                floating_volume = 0.0
+                if floating_type == "video" and bool(
+                    floating_item.get("use_clip_audio")
+                ):
+                    stored_floating_volume = floating_item.get("audio_volume")
+                    floating_volume = clamp_float(
+                        float(
+                            1.0
+                            if stored_floating_volume is None
+                            else stored_floating_volume
+                        ),
+                        0.0,
+                        1.0,
+                    )
+                floating_src = (
+                    video_preview_data_url(
+                        str(floating_path), floating_path.stat().st_mtime_ns
+                    )
+                    if floating_type == "video"
+                    else image_preview_data_url(
+                        str(floating_path), floating_path.stat().st_mtime_ns
+                    )
+                )
+                floating_playlist.append(
+                    {
+                        "name": str(
+                            floating_item.get("name") or floating_path.name
+                        ),
+                        "kind": floating_type,
+                        "src": floating_src,
+                        "video_src": (
+                            canvas_video_data_url(
+                                str(floating_path),
+                                floating_path.stat().st_mtime_ns,
+                            )
+                            if floating_type == "video"
+                            else ""
+                        ),
+                        "duration": min(
+                            float(template_photo_seconds),
+                            max(
+                                0.1,
+                                float(
+                                    floating_item.get("clip_duration")
+                                    or template_photo_seconds
+                                ),
+                            )
+                            if floating_type == "video"
+                            else float(template_photo_seconds),
+                        ),
+                        "preview_volume": floating_volume,
+                    }
+                )
+            first_floating = floating_playlist[0]
             canvas_images.append(
-                {"id": "images", "name": "Floating media", "kind": first_floating_type, "deletable": True, "src": loop_preview_src, "video_src": (canvas_video_data_url(str(loop_preview_path), loop_preview_path.stat().st_mtime_ns) if first_floating_type == "video" else ""), "preview_volume": floating_preview_volume, "start": 0.0, "duration": editor_video_duration}
+                {
+                    "id": "images",
+                    "name": f"Floating media · {len(floating_playlist)} items",
+                    "kind": str(first_floating["kind"]),
+                    "deletable": True,
+                    "src": str(first_floating["src"]),
+                    "video_src": str(first_floating["video_src"]),
+                    "preview_volume": float(first_floating["preview_volume"]),
+                    "playlist": floating_playlist,
+                    "start": 0.0,
+                    "duration": editor_video_duration,
+                }
             )
         if selected_logo_path and "logo" not in hidden_template_components:
             canvas_images.append(
@@ -6340,6 +6397,11 @@ def main() -> None:
                     for start, duration in voice_pauses_for_export
                 ],
                 voiceover_volume=1.0,
+                source_duration=float(raw_video_duration),
+                source_cuts=[
+                    {"start": float(start), "end": float(end)}
+                    for start, end in source_cuts_for_export
+                ],
                 storage_key=(
                     "partner-template-canvas:"
                     f"{st.session_state.get('partner_video_signature', source_path.name)}:"
@@ -6358,6 +6420,35 @@ def main() -> None:
             )
 
         if isinstance(template_canvas_result, dict):
+            cut_event = str(template_canvas_result.get("cut_event") or "")
+            is_new_cut_event = bool(
+                cut_event
+                and cut_event
+                != st.session_state.get("partner_last_canvas_cut_event")
+            )
+            if is_new_cut_event:
+                canvas_cut_ranges = normalise_cut_ranges(
+                    [
+                        item
+                        for item in template_canvas_result.get("source_cuts", [])
+                        if isinstance(item, dict)
+                    ],
+                    raw_video_duration,
+                )
+                st.session_state["partner_last_canvas_cut_event"] = cut_event
+                st.session_state["partner_source_cuts"] = [
+                    {
+                        "id": uuid.uuid4().hex,
+                        "start": float(start),
+                        "end": float(end),
+                        "to_end": False,
+                    }
+                    for start, end in canvas_cut_ranges
+                ]
+                # Rebuild downstream duration and export state from the source
+                # cut immediately after an editor timeline action.
+                st.rerun()
+
             deletion_event = str(
                 template_canvas_result.get("deletion_event") or ""
             )

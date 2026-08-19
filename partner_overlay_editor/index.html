@@ -139,6 +139,14 @@
     body.freehand-only #together { display: none; }
     body.spatial-only .timing-card { padding: 9px 12px; }
     body.spatial-only .selected-help::after { content: " Drag on the canvas and resize from the lower-right corner."; }
+    body:not(.advanced-tools) .side-panel { display:none; }
+    body:not(.advanced-tools) .editor-workspace { grid-template-columns:1fr; }
+    body:not(.advanced-tools) #undo,
+    body:not(.advanced-tools) #redo,
+    body:not(.advanced-tools) #zoomOut,
+    body:not(.advanced-tools) #zoomLabel,
+    body:not(.advanced-tools) #zoomIn,
+    body:not(.advanced-tools) #resetLayout { display:none; }
     .timeline { margin-top: 12px; }
     .track { position: relative; height: 38px; border-radius: 7px; background: #282d38; overflow: hidden; touch-action: none; }
     .track::before {
@@ -195,6 +203,7 @@
     <span class="label">LAYOUT</span>
     <button type="button" id="previewComposition" class="preview-button">▶ Play video preview</button>
     <button type="button" id="saveLayout" class="save-button" disabled>✓ Layout saved</button>
+    <button type="button" id="toggleAdvanced">Layout tools</button>
     <button type="button" id="undo">↶ Undo</button>
     <button type="button" id="redo">↷ Redo</button>
     <button type="button" id="zoomOut">−</button>
@@ -310,6 +319,7 @@
     let storageKey = "";
     let sourceCuts = [];
     let sourcePlayhead = 0;
+    let advancedToolsVisible = false;
 
     const post = (type, payload = {}) => window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
     const ready = () => post("streamlit:componentReady", {apiVersion: 1});
@@ -869,6 +879,12 @@
     document.getElementById("redo").onclick=()=>{if(!future.length)return;history.push(snapshot());restore(future.pop());};
     document.getElementById("previewComposition").onclick=startCompositionPreview;
     document.getElementById("saveLayout").onclick=()=>{if(dirty)commit();};
+    document.getElementById("toggleAdvanced").onclick=()=>{
+      advancedToolsVisible=!advancedToolsVisible;
+      document.body.classList.toggle("advanced-tools",advancedToolsVisible);
+      document.getElementById("toggleAdvanced").textContent=advancedToolsVisible?"Hide layout tools":"Layout tools";
+      setHeight();
+    };
     function setZoom(value){zoom=clamp(value,.5,1.75);canvasFrame.style.width=`${zoom*100}%`;document.getElementById("zoomLabel").textContent=`${Math.round(zoom*100)}%`;setHeight();}
     document.getElementById("zoomOut").onclick=()=>setZoom(zoom-.1); document.getElementById("zoomIn").onclick=()=>setZoom(zoom+.1); document.getElementById("zoomLabel").onclick=()=>setZoom(1);
     window.addEventListener("keydown",event=>{const item=current();if(!item||!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key))return;event.preventDefault();remember();const step=(event.shiftKey?10:1)/1920;if(event.key==="ArrowLeft")item.x=clamp(item.x-step,0,1-item.w);if(event.key==="ArrowRight")item.x=clamp(item.x+step,0,1-item.w);if(event.key==="ArrowUp")item.y=clamp(item.y-step,0,1-item.h);if(event.key==="ArrowDown")item.y=clamp(item.y+step,0,1-item.h);renderAll();setDirty();});

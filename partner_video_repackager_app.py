@@ -5230,67 +5230,36 @@ def main() -> None:
             st.rerun()
 
         remove_cut_id: Optional[str] = None
+        if source_cut_items:
+            st.markdown("#### Removed sections")
+            st.caption(
+                "Need a section back? Click **Restore this section** beside it."
+            )
         for cut_index, cut in enumerate(source_cut_items):
             cut_id = str(cut["id"])
             cut_start_value = clamp_float(
-                float(cut.get("start") or 0.0), 0.0, max(0.0, raw_video_duration - 0.1)
+                float(cut.get("start") or 0.0),
+                0.0,
+                max(0.0, raw_video_duration - 0.1),
             )
             cut_end_value = clamp_float(
                 float(cut.get("end") or cut_start_value + 1.0),
                 cut_start_value + 0.1,
                 raw_video_duration,
             )
-            with st.expander(
-                f"Remove {compact_time(cut_start_value)}–{compact_time(cut_end_value)}",
-                expanded=len(source_cut_items) == 1,
-            ):
-                remove_through_end = st.checkbox(
-                    "Continue this removal through the end of the uploaded video",
-                    value=bool(cut.get("to_end") or False),
-                    key=f"partner_cut_to_end_{cut_id}",
-                    help=(
-                        "Use this when the unwanted section is at the end. It prevents "
-                        "a fractional final second from remaining in the edited base."
-                    ),
+            with st.container(border=True):
+                cut_row = st.columns([0.72, 0.28], vertical_alignment="center")
+                cut_row[0].markdown(
+                    f"**{compact_time(cut_start_value)}–{compact_time(cut_end_value)} removed**  "
+                    f"\n{cut_end_value - cut_start_value:.1f} seconds from the original video"
                 )
-                cut_columns = st.columns([1, 1, 0.32], vertical_alignment="bottom")
-                cut_start = cut_columns[0].number_input(
-                    "From raw video (seconds)",
-                    min_value=0.0,
-                    max_value=max(0.0, raw_video_duration - 0.1),
-                    value=cut_start_value,
-                    step=0.1,
-                    key=f"partner_cut_start_{cut_id}",
-                )
-                if remove_through_end:
-                    cut_columns[1].text_input(
-                        "To raw video (seconds)",
-                        value=f"{raw_video_duration:.2f} · End of upload",
-                        disabled=True,
-                        key=f"partner_cut_end_display_{cut_id}",
-                    )
-                    cut_end = raw_video_duration
-                else:
-                    cut_end = cut_columns[1].number_input(
-                        "To raw video (seconds)",
-                        min_value=min(raw_video_duration, float(cut_start) + 0.1),
-                        max_value=raw_video_duration,
-                        value=max(
-                            cut_end_value,
-                            min(raw_video_duration, float(cut_start) + 0.1),
-                        ),
-                        step=0.1,
-                        key=f"partner_cut_end_{cut_id}",
-                    )
-                if cut_columns[2].button(
-                    "Undo cut",
+                if cut_row[1].button(
+                    "Restore this section",
+                    icon=":material/restore:",
                     key=f"partner_delete_cut_{cut_id}",
                     width="stretch",
                 ):
                     remove_cut_id = cut_id
-                cut["start"] = float(cut_start)
-                cut["end"] = float(cut_end)
-                cut["to_end"] = bool(remove_through_end)
 
         if remove_cut_id is not None:
             st.session_state["partner_source_cuts"] = [

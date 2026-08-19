@@ -5177,42 +5177,52 @@ def main() -> None:
         # st.empty keeps that unified canvas in this primary position.
         video_canvas_slot = st.empty()
 
-        with st.expander("Advanced timing and source edits", expanded=False):
-            st.caption(
-                "Optional controls for removing source sections and fine-tuning "
-                "narration timing remain available below."
-            )
-        st.markdown("**A. Remove sections from the uploaded raw video**")
+        st.markdown("### Cut unwanted parts from the original video")
         st.caption(
-            f"The timestamps in this section refer only to the original upload "
-            f"({source_path.name}) shown in Step 1—not to the generated video. "
-            "Cuts are completed before voiceover, images, video bytes or slugs are composed."
+            f"Enter the start and end of the unwanted part in {source_path.name}. "
+            "This removes that section before voiceover, images, video clips and text are added."
         )
         if "partner_source_cuts" not in st.session_state:
             st.session_state["partner_source_cuts"] = []
         source_cut_items: List[Dict[str, object]] = st.session_state[
             "partner_source_cuts"
         ]
-        cut_header_columns = st.columns([0.72, 0.28], vertical_alignment="center")
-        cut_header_columns[0].caption(
-            f"Raw video length: {compact_time(raw_video_duration)} "
+        st.caption(
+            f"Original video length: {compact_time(raw_video_duration)} "
             f"({raw_video_duration:.2f} seconds)"
         )
-        if cut_header_columns[1].button(
-            "＋ Remove section",
-            use_container_width=True,
+        quick_cut_columns = st.columns([1, 1, 0.72], vertical_alignment="bottom")
+        quick_cut_start = quick_cut_columns[0].number_input(
+            "Unwanted section starts at",
+            min_value=0.0,
+            max_value=max(0.0, raw_video_duration - 0.1),
+            value=0.0,
+            step=0.1,
+            key="partner_quick_cut_start",
+            help="Timestamp in the original uploaded video, in seconds.",
+        )
+        quick_cut_end = quick_cut_columns[1].number_input(
+            "Unwanted section ends at",
+            min_value=0.1,
+            max_value=raw_video_duration,
+            value=min(raw_video_duration, 5.0),
+            step=0.1,
+            key="partner_quick_cut_end",
+            help="This must be later than the start timestamp.",
+        )
+        quick_cut_valid = float(quick_cut_end) - float(quick_cut_start) >= 0.1
+        if quick_cut_columns[2].button(
+            "Remove this section",
+            type="primary",
+            width="stretch",
+            disabled=not quick_cut_valid,
             key="partner_add_source_cut",
         ):
-            previous_end = max(
-                (float(item.get("end") or 0.0) for item in source_cut_items),
-                default=0.0,
-            )
-            cut_start = min(previous_end, max(0.0, raw_video_duration - 1.0))
             source_cut_items.append(
                 {
                     "id": time.time_ns(),
-                    "start": cut_start,
-                    "end": min(raw_video_duration, cut_start + 1.0),
+                    "start": float(quick_cut_start),
+                    "end": float(quick_cut_end),
                     "to_end": False,
                 }
             )
@@ -5273,9 +5283,9 @@ def main() -> None:
                         key=f"partner_cut_end_{cut_id}",
                     )
                 if cut_columns[2].button(
-                    "Remove",
+                    "Undo cut",
                     key=f"partner_delete_cut_{cut_id}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     remove_cut_id = cut_id
                 cut["start"] = float(cut_start)

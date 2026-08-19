@@ -156,14 +156,21 @@
       background: #111620;
     }
     .sequence-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
-    .sequence-title { color:#d9dde5; font-size:12px; font-weight:850; letter-spacing:.06em; }
+    .sequence-title { color:#d9dde5; font-size:12px; font-weight:850; letter-spacing:.04em; }
+    .sequence-explainer { margin-top:3px; color:#9ba5b5; font-size:10px; font-weight:500; letter-spacing:0; }
     .sequence-tools { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
     .sequence-tools button { padding:5px 9px; font-size:10px; }
     .sequence-tools .danger { color:#ff9a9a; border-color:#704049; }
     .source-time { min-width:94px; color:#9ba5b5; font-size:10px; text-align:right; }
     .source-scrubber { width:100%; accent-color:#ff4b4b; cursor:pointer; }
+    .cut-window { display:grid; grid-template-columns:1fr 1fr auto; gap:8px; align-items:end; margin-top:8px; }
+    .cut-window label { display:grid; gap:3px; color:#929cab; font-size:9px; font-weight:800; letter-spacing:.04em; }
+    .cut-window input { width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid #3a4352; border-radius:6px; background:#202632; color:#f5f7fa; }
+    .cut-window button { height:32px; }
+    .cut-window button:disabled { cursor:not-allowed; opacity:.42; }
+    .mark-error { color:#ff8f99; }
     .track-stack { margin-top:7px; display:grid; gap:4px; }
-    .editor-track { display:grid; grid-template-columns:74px 1fr; gap:7px; align-items:center; }
+    .editor-track { display:grid; grid-template-columns:100px 1fr; gap:7px; align-items:center; }
     .track-name { color:#8f98a7; font-size:9px; font-weight:800; letter-spacing:.05em; text-align:right; }
     .track-lane { position:relative; height:24px; overflow:hidden; border:1px solid #303744; border-radius:5px; background:#1c222d; }
     .track-segment, .sequence-segment { position:absolute; top:3px; bottom:3px; min-width:3px; border:0; border-radius:3px; background:#337fc5; opacity:.95; color:#fff; font-size:8px; text-align:left; overflow:hidden; white-space:nowrap; padding:0 5px; }
@@ -223,22 +230,21 @@
   </div>
   <section class="sequence-panel" aria-label="Editor timeline">
     <div class="sequence-head">
-      <div class="sequence-title">TIMELINE · SOURCE TRIM & AUDIO</div>
+      <div class="sequence-title">EDIT THE ORIGINAL VIDEO
+        <div class="sequence-explainer">Use the cut controls directly below this canvas to remove an unwanted section. This timeline shows the result.</div>
+      </div>
       <div class="sequence-tools">
-        <button type="button" id="markCutIn">Mark in</button>
-        <button type="button" id="markCutOut">Mark out</button>
-        <button type="button" id="removeMarkedRange" class="danger">Remove marked range</button>
         <span id="sourceTime" class="source-time">0:00.0 / 0:00.0</span>
       </div>
     </div>
-    <input id="sourceScrubber" class="source-scrubber" type="range" min="0" max="60" value="0" step="0.05" aria-label="Raw video playhead">
+    <input id="sourceScrubber" class="source-scrubber" type="range" min="0" max="60" value="0" step="0.05" aria-label="Preview playhead">
     <div class="track-stack">
-      <div class="editor-track"><div class="track-name">RAW VIDEO</div><div id="sourceTrack" class="track-lane"></div></div>
-      <div class="editor-track"><div class="track-name">VISUALS</div><div id="visualTrack" class="track-lane"></div></div>
-      <div class="editor-track"><div class="track-name">SLUGS</div><div id="slugTrack" class="track-lane"></div></div>
+      <div class="editor-track"><div class="track-name">ORIGINAL VIDEO</div><div id="sourceTrack" class="track-lane"></div></div>
+      <div class="editor-track"><div class="track-name">ADDED MEDIA</div><div id="visualTrack" class="track-lane"></div></div>
+      <div class="editor-track"><div class="track-name">ON-SCREEN TEXT</div><div id="slugTrack" class="track-lane"></div></div>
       <div class="editor-track"><div class="track-name">VOICEOVER</div><div id="voiceTrack" class="track-lane"></div></div>
     </div>
-    <div id="markSummary" class="mark-summary">Move the playhead, mark an in and out point, then remove that section from the raw video.</div>
+    <div id="markSummary" class="mark-summary">No sections have been removed from the original video.</div>
     <div id="cutChipList" class="cut-chip-list"></div>
   </section>
   <div class="hint">Edit mode keeps every slug visible and shows other media at the selected layer's start time. Play the video preview to inspect true timing.</div>
@@ -304,8 +310,6 @@
     let storageKey = "";
     let sourceCuts = [];
     let sourcePlayhead = 0;
-    let cutMarkIn = null;
-    let cutMarkOut = null;
 
     const post = (type, payload = {}) => window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
     const ready = () => post("streamlit:componentReady", {apiVersion: 1});
@@ -669,20 +673,14 @@
         playhead.style.left = `${clamp(sourcePlayhead / sourceLength, 0, 1) * 100}%`;
         host.appendChild(playhead);
       });
-      markSummary.textContent = cutMarkIn == null
-        ? "Set an In point, move the playhead, then set Out."
-        : cutMarkOut == null
-          ? `In ${formatTime(cutMarkIn)} · choose an Out point`
-          : `Marked ${formatTime(Math.min(cutMarkIn, cutMarkOut))}–${formatTime(Math.max(cutMarkIn, cutMarkOut))}`;
+      markSummary.textContent = sourceCuts.length
+        ? `${sourceCuts.length} removed section${sourceCuts.length === 1 ? "" : "s"} shown in red. Use Undo cut below the canvas to restore one.`
+        : "No sections have been removed from the original video.";
       cutChipList.innerHTML = "";
-      sourceCuts.forEach((cut, index) => {
-        const chip = document.createElement("button");
-        chip.type = "button"; chip.className = "cut-chip";
-        chip.textContent = `Remove ${formatTime(cut.start)}–${formatTime(cut.end)} ×`;
-        chip.onclick = () => {
-          sourceCuts.splice(index, 1); renderSequence();
-          commit([], "", `${Date.now()}:restore:${index}`);
-        };
+      sourceCuts.forEach(cut => {
+        const chip = document.createElement("span");
+        chip.className = "cut-chip";
+        chip.textContent = `Removed ${formatTime(cut.start)}–${formatTime(cut.end)}`;
         cutChipList.appendChild(chip);
       });
     }
@@ -934,18 +932,6 @@
       renderSequence();
     }
     sourceScrubber.addEventListener("input", event => seekSourcePreview(event.target.value));
-    document.getElementById("markCutIn").onclick = () => { cutMarkIn = sourcePlayhead; cutMarkOut = null; renderSequence(); };
-    document.getElementById("markCutOut").onclick = () => { cutMarkOut = sourcePlayhead; renderSequence(); };
-    document.getElementById("removeMarkedRange").onclick = () => {
-      if (cutMarkIn == null || cutMarkOut == null) return;
-      const start = Math.min(cutMarkIn, cutMarkOut);
-      const end = Math.max(cutMarkIn, cutMarkOut);
-      if (end - start < .05) return;
-      sourceCuts = mergeSourceCuts([...sourceCuts, {start, end}]);
-      cutMarkIn = null; cutMarkOut = null;
-      renderSequence();
-      commit([], "", `${Date.now()}:cut:${start.toFixed(3)}:${end.toFixed(3)}`);
-    };
 
     window.addEventListener("message", event => {
       if(event.data?.type!=="streamlit:render") return;

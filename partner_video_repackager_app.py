@@ -5177,95 +5177,11 @@ def main() -> None:
         # st.empty keeps that unified canvas in this primary position.
         video_canvas_slot = st.empty()
 
-        st.markdown("### Cut unwanted parts from the original video")
-        st.caption(
-            f"Enter the start and end of the unwanted part in {source_path.name}. "
-            "This removes that section before voiceover, images, video clips and text are added."
-        )
         if "partner_source_cuts" not in st.session_state:
             st.session_state["partner_source_cuts"] = []
         source_cut_items: List[Dict[str, object]] = st.session_state[
             "partner_source_cuts"
         ]
-        st.caption(
-            f"Original video length: {compact_time(raw_video_duration)} "
-            f"({raw_video_duration:.2f} seconds)"
-        )
-        quick_cut_columns = st.columns([1, 1, 0.72], vertical_alignment="bottom")
-        quick_cut_start = quick_cut_columns[0].number_input(
-            "Unwanted section starts at",
-            min_value=0.0,
-            max_value=max(0.0, raw_video_duration - 0.1),
-            value=0.0,
-            step=0.1,
-            key="partner_quick_cut_start",
-            help="Timestamp in the original uploaded video, in seconds.",
-        )
-        quick_cut_end = quick_cut_columns[1].number_input(
-            "Unwanted section ends at",
-            min_value=0.1,
-            max_value=raw_video_duration,
-            value=min(raw_video_duration, 5.0),
-            step=0.1,
-            key="partner_quick_cut_end",
-            help="This must be later than the start timestamp.",
-        )
-        quick_cut_valid = float(quick_cut_end) - float(quick_cut_start) >= 0.1
-        if quick_cut_columns[2].button(
-            "Remove this section",
-            type="primary",
-            width="stretch",
-            disabled=not quick_cut_valid,
-            key="partner_add_source_cut",
-        ):
-            source_cut_items.append(
-                {
-                    "id": time.time_ns(),
-                    "start": float(quick_cut_start),
-                    "end": float(quick_cut_end),
-                    "to_end": False,
-                }
-            )
-            st.session_state["partner_source_cuts"] = source_cut_items
-            st.rerun()
-
-        remove_cut_id: Optional[str] = None
-        if source_cut_items:
-            st.markdown("#### Removed sections")
-            st.caption(
-                "Need a section back? Click **Restore this section** beside it."
-            )
-        for cut_index, cut in enumerate(source_cut_items):
-            cut_id = str(cut["id"])
-            cut_start_value = clamp_float(
-                float(cut.get("start") or 0.0),
-                0.0,
-                max(0.0, raw_video_duration - 0.1),
-            )
-            cut_end_value = clamp_float(
-                float(cut.get("end") or cut_start_value + 1.0),
-                cut_start_value + 0.1,
-                raw_video_duration,
-            )
-            with st.container(border=True):
-                cut_row = st.columns([0.72, 0.28], vertical_alignment="center")
-                cut_row[0].markdown(
-                    f"**{compact_time(cut_start_value)}–{compact_time(cut_end_value)} removed**  "
-                    f"\n{cut_end_value - cut_start_value:.1f} seconds from the original video"
-                )
-                if cut_row[1].button(
-                    "Restore this section",
-                    icon=":material/restore:",
-                    key=f"partner_delete_cut_{cut_id}",
-                    width="stretch",
-                ):
-                    remove_cut_id = cut_id
-
-        if remove_cut_id is not None:
-            st.session_state["partner_source_cuts"] = [
-                item for item in source_cut_items if str(item["id"]) != remove_cut_id
-            ]
-            st.rerun()
         st.session_state["partner_source_cuts"] = source_cut_items
         source_cuts_for_export = normalise_cut_ranges(
             source_cut_items, raw_video_duration
@@ -6358,6 +6274,116 @@ def main() -> None:
 
         with video_canvas_slot.container():
             st.markdown("**Video canvas**")
+            with st.container(border=True):
+                st.markdown("#### Cut the original video")
+                st.caption(
+                    "Enter the start and end of the unwanted part. The cut is "
+                    "applied before voiceover, added media and on-screen text."
+                )
+                st.session_state["partner_quick_cut_start"] = clamp_float(
+                    float(st.session_state.get("partner_quick_cut_start", 0.0)),
+                    0.0,
+                    max(0.0, raw_video_duration - 0.1),
+                )
+                st.session_state["partner_quick_cut_end"] = clamp_float(
+                    float(
+                        st.session_state.get(
+                            "partner_quick_cut_end",
+                            min(raw_video_duration, 5.0),
+                        )
+                    ),
+                    0.1,
+                    raw_video_duration,
+                )
+                cut_controls = st.columns(
+                    [1, 1, 0.72], vertical_alignment="bottom"
+                )
+                quick_cut_start = cut_controls[0].number_input(
+                    "Remove from",
+                    min_value=0.0,
+                    max_value=max(0.0, raw_video_duration - 0.1),
+                    step=0.1,
+                    key="partner_quick_cut_start",
+                    help="Seconds in the original uploaded video.",
+                )
+                quick_cut_end = cut_controls[1].number_input(
+                    "Remove to",
+                    min_value=0.1,
+                    max_value=raw_video_duration,
+                    step=0.1,
+                    key="partner_quick_cut_end",
+                    help="The end must be later than the start.",
+                )
+                candidate_cuts = normalise_cut_ranges(
+                    [
+                        *source_cut_items,
+                        {
+                            "start": float(quick_cut_start),
+                            "end": float(quick_cut_end),
+                        },
+                    ],
+                    raw_video_duration,
+                )
+                quick_cut_valid = bool(
+                    float(quick_cut_end) - float(quick_cut_start) >= 0.1
+                    and kept_source_ranges(candidate_cuts, raw_video_duration)
+                )
+                if cut_controls[2].button(
+                    "Remove section",
+                    type="primary",
+                    icon=":material/content_cut:",
+                    width="stretch",
+                    disabled=not quick_cut_valid,
+                    key="partner_add_source_cut",
+                ):
+                    st.session_state["partner_source_cuts"] = [
+                        *source_cut_items,
+                        {
+                            "id": time.time_ns(),
+                            "start": float(quick_cut_start),
+                            "end": float(quick_cut_end),
+                            "to_end": False,
+                        },
+                    ]
+                    st.rerun()
+
+                if not quick_cut_valid:
+                    st.caption(
+                        "Choose an end later than the start and leave at least "
+                        "0.1 seconds of the original video."
+                    )
+                if source_cut_items:
+                    st.markdown("**Removed sections**")
+                    st.caption(
+                        "Click Restore to put a removed section back into the video."
+                    )
+                restore_cut_id: Optional[str] = None
+                for cut in source_cut_items:
+                    cut_id = str(cut["id"])
+                    cut_start_value = float(cut.get("start") or 0.0)
+                    cut_end_value = float(cut.get("end") or 0.0)
+                    cut_row = st.columns(
+                        [0.72, 0.28], vertical_alignment="center"
+                    )
+                    cut_row[0].markdown(
+                        f"**{compact_time(cut_start_value)}–"
+                        f"{compact_time(cut_end_value)} removed** · "
+                        f"{cut_end_value - cut_start_value:.1f}s"
+                    )
+                    if cut_row[1].button(
+                        "Restore",
+                        icon=":material/restore:",
+                        width="stretch",
+                        key=f"partner_delete_cut_{cut_id}",
+                    ):
+                        restore_cut_id = cut_id
+                if restore_cut_id is not None:
+                    st.session_state["partner_source_cuts"] = [
+                        item
+                        for item in source_cut_items
+                        if str(item["id"]) != restore_cut_id
+                    ]
+                    st.rerun()
             st.caption(
                 "Preview the video here, then drag or resize any visual or slug. "
                 "Slugs appear only on this canvas and are never rendered in a separate editor."

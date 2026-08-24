@@ -102,6 +102,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
+APP_BUILD_ID = "Reuters-2026.08.24.1"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -3804,7 +3805,10 @@ def render_workspace_header() -> None:
                 </div>
                 <div class="studio-session-status">
                     <span class="studio-status-dot"></span>
-                    Session workspace
+                    <span>
+                        Session workspace
+                        <small>Build {APP_BUILD_ID}</small>
+                    </span>
                 </div>
             </div>
             <div class="studio-progress" aria-label="Production progress">
@@ -4128,6 +4132,17 @@ def main() -> None:
             border-radius: 50%;
             background: #19a576;
             box-shadow: 0 0 0 4px rgba(25,165,118,.12);
+        }
+        .studio-session-status span:last-child {
+            display: flex;
+            flex-direction: column;
+            gap: .08rem;
+        }
+        .studio-session-status small {
+            color: var(--studio-muted);
+            font-size: .62rem;
+            font-weight: 650;
+            letter-spacing: .02em;
         }
         .studio-progress {
             display: grid;

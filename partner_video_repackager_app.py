@@ -102,7 +102,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Reuters-2026.08.24.2"
+APP_BUILD_ID = "Reuters-2026.08.24.3"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -546,13 +546,41 @@ def search_reuters_videos(
                 "description": str(raw_item.get("caption") or ""),
                 "duration": "",
                 "preview_url": str(
-                    raw_item.get("previewUrl") or raw_item.get("thumbnailUrl") or ""
+                    raw_item.get("thumbnailUrl") or raw_item.get("previewUrl") or ""
                 ),
                 "video_url": "",
                 "downloadable": bool(versioned_guid or usn),
             }
         )
     return items, f"Found {total_hits:,} entitled Reuters video(s); showing {len(items)}."
+
+
+@st.cache_data(ttl=900, max_entries=128, show_spinner=False)
+def _reuters_preview_image(preview_url: str, access_token: str) -> Optional[bytes]:
+    """Fetch a Reuters thumbnail server-side so browser cookies are not required."""
+    parsed = urlparse(preview_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not parsed.hostname.endswith("reutersconnect.com")
+    ):
+        return None
+    try:
+        response = requests.get(
+            preview_url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "image/*",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").lower()
+        if not content_type.startswith("image/") or not response.content:
+            return None
+        return response.content
+    except Exception:
+        return None
 
 
 def _first_text(mapping: Dict[str, object], keys: Tuple[str, ...]) -> str:
@@ -4464,50 +4492,103 @@ def main() -> None:
             )
             if provider_message:
                 st.caption(provider_message)
-            for result_index, result in enumerate(provider_results):
-                with st.container(border=True):
-                    card_columns = st.columns([0.22, 0.58, 0.20], vertical_alignment="center")
-                    if result.get("preview_url"):
-                        card_columns[0].image(result["preview_url"], width="stretch")
-                    else:
-                        card_columns[0].caption(f"{provider} VIDEO")
-                    card_columns[1].markdown(f"**{result['title']}**")
-                    if result.get("description"):
-                        card_columns[1].caption(result["description"][:320])
-                    if result.get("duration"):
-                        card_columns[1].caption(f"Duration: {result['duration']}")
-                    if card_columns[2].button(
-                        "License & import" if provider == "Reuters" else "Use this video",
-                        width="stretch",
-                        key=f"partner_use_{provider.lower()}_{result_index}_{result['id']}",
-                        disabled=not bool(
-                            result.get("downloadable") or result.get("video_url")
-                        ),
+            reuters_preview_token = ""
+            if provider == "Reuters" and provider_results:
+                try:
+                    reuters_preview_token = _reuters_token(provider_config)
+                except Exception:
+                    pass
+            for row_start in range(0, len(provider_results), 3):
+                card_columns = st.columns(3)
+                for column_offset, result in enumerate(
+                    provider_results[row_start : row_start + 3]
+                ):
+                    result_index = row_start + column_offset
+                    with card_columns[column_offset].container(
+                        border=True, height="stretch"
                     ):
-                        with st.spinner(f"Importing the licensed {provider} video..."):
-                            imported_path, import_message = download_newsroom_video(result)
-                        if imported_path:
-                            st.session_state["partner_video_path"] = str(imported_path)
-                            st.session_state["partner_video_signature"] = (
-                                f"{provider}:{result['id']}:{imported_path.stat().st_size}"
+                        preview_image = None
+                        if (
+                            provider == "Reuters"
+                            and result.get("preview_url")
+                            and reuters_preview_token
+                        ):
+                            preview_image = _reuters_preview_image(
+                                str(result["preview_url"]), reuters_preview_token
                             )
-                            st.session_state["partner_video_source_label"] = provider
-                            for dependent_key in (
-                                "partner_transcript",
-                                "partner_segments",
-                                "partner_editable_transcript",
-                                "partner_manual_script",
-                                "partner_voiceover",
-                                "partner_eleven_preview_bytes",
-                                "partner_audio_preview_bytes",
-                                "partner_voiceover_preview_path",
-                                "partner_latest_export",
-                                "partner_latest_preview",
+                        if preview_image:
+                            st.image(preview_image, width="stretch")
+                        elif provider != "Reuters" and result.get("preview_url"):
+                            st.image(result["preview_url"], width="stretch")
+                        else:
+                            st.caption(
+                                "Preview unavailable",
+                                text_alignment="center",
+                            )
+                        source_reference = str(
+                            result.get("usn") or result.get("id") or ""
+                        )
+                        st.caption(
+                            f"{provider.upper()} VIDEO"
+                            + (f" · {source_reference}" if source_reference else "")
+                        )
+                        st.markdown(f"**{result['title']}**")
+                        if result.get("description"):
+                            description = str(result["description"])
+                            st.caption(
+                                description[:180]
+                                + ("…" if len(description) > 180 else "")
+                            )
+                        if result.get("duration"):
+                            st.caption(f"Duration: {result['duration']}")
+                        if st.button(
+                            "License & import"
+                            if provider == "Reuters"
+                            else "Use this video",
+                            icon=":material/download:",
+                            width="stretch",
+                            key=(
+                                f"partner_use_{provider.lower()}_"
+                                f"{result_index}_{result['id']}"
+                            ),
+                            disabled=not bool(
+                                result.get("downloadable")
+                                or result.get("video_url")
+                            ),
+                        ):
+                            with st.spinner(
+                                f"Importing the licensed {provider} video..."
                             ):
-                                st.session_state.pop(dependent_key, None)
-                            st.success(import_message)
-                            st.rerun()
-                        st.error(import_message)
+                                imported_path, import_message = (
+                                    download_newsroom_video(result)
+                                )
+                            if imported_path:
+                                st.session_state["partner_video_path"] = str(
+                                    imported_path
+                                )
+                                st.session_state["partner_video_signature"] = (
+                                    f"{provider}:{result['id']}:"
+                                    f"{imported_path.stat().st_size}"
+                                )
+                                st.session_state[
+                                    "partner_video_source_label"
+                                ] = provider
+                                for dependent_key in (
+                                    "partner_transcript",
+                                    "partner_segments",
+                                    "partner_editable_transcript",
+                                    "partner_manual_script",
+                                    "partner_voiceover",
+                                    "partner_eleven_preview_bytes",
+                                    "partner_audio_preview_bytes",
+                                    "partner_voiceover_preview_path",
+                                    "partner_latest_export",
+                                    "partner_latest_preview",
+                                ):
+                                    st.session_state.pop(dependent_key, None)
+                                st.success(import_message)
+                                st.rerun()
+                            st.error(import_message)
 
         source_path: Optional[Path] = None
         if uploaded:

@@ -194,18 +194,71 @@
     .mark-summary { margin-top:6px; color:#9ca5b4; font-size:10px; }
     .cut-chip-list { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
     .cut-chip { padding:3px 6px; border-radius:999px; background:#3b1d24; color:#ffadb4; border:1px solid #63323b; font-size:9px; }
+    /* Focused editor shell: canvas-first by default, precision tools on demand. */
+    .editor-shell {
+      display:flex; flex-direction:column; gap:10px; padding:12px;
+      border-color:#2b303b; border-radius:18px;
+      background:linear-gradient(180deg,#141821 0%,#0d1118 100%);
+      box-shadow:0 18px 44px rgba(0,0,0,.22);
+    }
+    .toolbar {
+      order:1; min-height:50px; margin:0; padding:7px 9px;
+      border:1px solid #303642; border-radius:13px; background:rgba(28,33,43,.92);
+    }
+    .toolbar-brand { display:flex; flex-direction:column; min-width:150px; margin-right:4px; }
+    .toolbar-brand strong { font-size:13px; line-height:1.15; }
+    .toolbar-brand span { color:#929baa; font-size:9px; margin-top:2px; }
+    .toolbar-spacer { flex:1; }
+    button { border-radius:9px; transition:background .16s ease,border-color .16s ease,transform .16s ease; }
+    button:active { transform:scale(.98); }
+    .preview-button { min-width:112px; border-radius:999px; }
+    .save-button { min-width:92px; border-radius:999px; }
+    #toggleAdvanced,#toggleTimeline { background:#202631; }
+    .preview-meta { margin-left:0; background:transparent; border:0; color:#969fad; }
+    .timing-card { order:2; padding:9px 11px; border-radius:12px; background:#171c25; }
+    .editor-workspace { order:3; gap:12px; }
+    .canvas-viewport {
+      padding:18px; border:1px solid #272d38; border-radius:16px;
+      background:radial-gradient(circle at 50% 35%,#202631 0%,#0b0e14 70%);
+    }
+    #stage { border-radius:14px; border-color:#454c59; box-shadow:0 22px 54px rgba(0,0,0,.42); }
+    .side-panel { border-radius:13px; background:#181d26; }
+    .element-label { order:4; display:flex; align-items:center; justify-content:space-between; color:#d8dde6; font-size:11px; font-weight:800; }
+    .element-label span { color:#8f98a7; font-size:9px; font-weight:500; }
+    .strip { order:5; padding:0 1px 3px; }
+    .chip { flex-basis:166px; border-radius:11px; background:#191e27; }
+    .chip.selected { border-color:#ff5968; background:#2b2027; }
+    .sequence-panel { order:6; margin:0; padding:10px 12px; border-radius:13px; background:#111620; }
+    .sequence-title { letter-spacing:0; text-transform:none; font-size:11px; }
+    .sequence-explainer { font-size:9px; }
+    .editor-help { order:7; margin:0; padding:0 3px; }
+    body:not(.timeline-open) .track-stack,
+    body:not(.timeline-open) .mark-summary,
+    body:not(.timeline-open) .cut-chip-list { display:none; }
+    body:not(.timeline-open) .sequence-panel { padding-bottom:9px; }
+    body:not(.timeline-open) .source-scrubber { margin-top:2px; }
+    body:not(.advanced-tools) .timing-card .selected-help { display:none; }
+    body:not(.advanced-tools) .timing-card { border-color:#2d3440; }
+    @media (max-width:760px) {
+      .toolbar-brand { min-width:110px; }
+      .toolbar-spacer { display:none; }
+      .canvas-viewport { padding:8px; }
+      .preview-meta { width:100%; }
+    }
     @media (max-width: 640px) { .fields { grid-template-columns: 1fr 1fr; } .field.end { display: none; } }
   </style>
 </head>
 <body>
   <div class="editor-shell">
   <div class="toolbar">
-    <span class="label">LAYOUT</span>
-    <button type="button" id="previewComposition" class="preview-button">▶ Play video preview</button>
+    <div class="toolbar-brand"><strong>Video editor</strong><span>Drag to move · corners to resize</span></div>
+    <button type="button" id="previewComposition" class="preview-button">▶ Preview</button>
     <button type="button" id="saveLayout" class="save-button" disabled>✓ Layout saved</button>
-    <button type="button" id="toggleAdvanced">Layout tools</button>
-    <button type="button" id="undo">↶ Undo</button>
-    <button type="button" id="redo">↷ Redo</button>
+    <button type="button" id="toggleAdvanced">Adjust</button>
+    <button type="button" id="toggleTimeline">Timeline</button>
+    <span class="toolbar-spacer"></span>
+    <button type="button" id="undo" title="Undo">↶</button>
+    <button type="button" id="redo" title="Redo">↷</button>
     <button type="button" id="zoomOut">−</button>
     <button type="button" id="zoomLabel">100%</button>
     <button type="button" id="zoomIn">＋</button>
@@ -239,8 +292,8 @@
   </div>
   <section class="sequence-panel" aria-label="Editor timeline">
     <div class="sequence-head">
-      <div class="sequence-title">EDIT THE ORIGINAL VIDEO
-        <div class="sequence-explainer">Use the cut controls directly below this canvas to remove an unwanted section. This timeline shows the result.</div>
+      <div class="sequence-title">Timeline
+        <div class="sequence-explainer">Drag the playhead to inspect the composition. Open Timeline to view every track.</div>
       </div>
       <div class="sequence-tools">
         <span id="sourceTime" class="source-time">0:00.0 / 0:00.0</span>
@@ -256,7 +309,8 @@
     <div id="markSummary" class="mark-summary">No sections have been removed from the original video.</div>
     <div id="cutChipList" class="cut-chip-list"></div>
   </section>
-  <div class="hint">Edit mode keeps every slug visible and shows other media at the selected layer's start time. Play the video preview to inspect true timing.</div>
+  <div class="hint editor-help">Select an element on the canvas or below. Preview shows its real timing and audio.</div>
+  <div class="element-label">Scene elements <span>Select an item to edit it</span></div>
   <div id="imageStrip" class="strip"></div>
   <div id="timingCard" class="timing-card">
     <div class="timing-top">
@@ -320,6 +374,7 @@
     let sourceCuts = [];
     let sourcePlayhead = 0;
     let advancedToolsVisible = false;
+    let timelineExpanded = false;
 
     const post = (type, payload = {}) => window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
     const ready = () => post("streamlit:componentReady", {apiVersion: 1});
@@ -882,7 +937,13 @@
     document.getElementById("toggleAdvanced").onclick=()=>{
       advancedToolsVisible=!advancedToolsVisible;
       document.body.classList.toggle("advanced-tools",advancedToolsVisible);
-      document.getElementById("toggleAdvanced").textContent=advancedToolsVisible?"Hide layout tools":"Layout tools";
+      document.getElementById("toggleAdvanced").textContent=advancedToolsVisible?"Done":"Adjust";
+      setHeight();
+    };
+    document.getElementById("toggleTimeline").onclick=()=>{
+      timelineExpanded=!timelineExpanded;
+      document.body.classList.toggle("timeline-open",timelineExpanded);
+      document.getElementById("toggleTimeline").textContent=timelineExpanded?"Hide timeline":"Timeline";
       setHeight();
     };
     function setZoom(value){zoom=clamp(value,.5,1.75);canvasFrame.style.width=`${zoom*100}%`;document.getElementById("zoomLabel").textContent=`${Math.round(zoom*100)}%`;setHeight();}

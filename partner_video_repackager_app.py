@@ -4786,7 +4786,7 @@ def main() -> None:
         raw_has_audio = media_has_audio(
             str(source_path), source_path.stat().st_mtime_ns
         )
-        with st.expander("Raw video audio", expanded=True):
+        with st.expander("Raw video audio", expanded=False):
             raw_audio_enabled = st.toggle(
                 "Play audio from the uploaded raw video",
                 value=(voice_choice == "No voiceover — use original video audio"),
@@ -6273,7 +6273,6 @@ def main() -> None:
                     )
 
         with video_canvas_slot.container():
-            st.markdown("**Video canvas**")
             with st.container(border=True):
                 st.markdown("#### Cut the original video")
                 st.caption(

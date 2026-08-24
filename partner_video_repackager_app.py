@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import time
 import wave
+import zipfile
 from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import timedelta
@@ -93,6 +94,14 @@ PROPERTY_LOGO_FILES = {
     "HerZindagi": "herzindagi.png",
 }
 TRANSCRIPTION_PIPELINE_VERSION = "indicconformer-hi-ctc-v1"
+REUTERS_TOKEN_URL = "https://auth.thomsonreuters.com/oauth/token"
+REUTERS_GRAPHQL_URL = "https://api.reutersconnect.com/content/graphql"
+REUTERS_READ_SCOPE = (
+    "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.read"
+)
+REUTERS_WRITE_SCOPE = (
+    "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
+)
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -315,30 +324,210 @@ def save_upload(uploaded_file) -> Path:
     return target
 
 
+def _server_setting(name: str, default: str = "") -> str:
+    """Read one server-only setting from the environment or Streamlit secrets."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name]).strip()
+    except Exception:
+        pass
+    return default
+
+
 def newsroom_video_api_config(provider: str) -> Dict[str, str]:
     """Return account-specific Reuters/ANI API settings without exposing keys."""
     prefix = provider.upper()
-    config = {
-        "base_url": os.environ.get(f"{prefix}_VIDEO_API_BASE_URL", "").strip(),
-        "api_key": os.environ.get(f"{prefix}_VIDEO_API_KEY", "").strip(),
-        "search_path": os.environ.get(f"{prefix}_VIDEO_SEARCH_PATH", "/videos").strip(),
-        "auth_header": os.environ.get(f"{prefix}_VIDEO_AUTH_HEADER", "Authorization").strip(),
-        "auth_scheme": os.environ.get(f"{prefix}_VIDEO_AUTH_SCHEME", "Bearer").strip(),
-    }
-    try:
-        secret_names = {
-            "base_url": f"{prefix}_VIDEO_API_BASE_URL",
-            "api_key": f"{prefix}_VIDEO_API_KEY",
-            "search_path": f"{prefix}_VIDEO_SEARCH_PATH",
-            "auth_header": f"{prefix}_VIDEO_AUTH_HEADER",
-            "auth_scheme": f"{prefix}_VIDEO_AUTH_SCHEME",
+    if provider.lower() == "reuters":
+        return {
+            "client_id": _server_setting("REUTERS_CLIENT_ID"),
+            "client_secret": _server_setting("REUTERS_CLIENT_SECRET"),
+            "audience": _server_setting("REUTERS_AUDIENCE"),
+            "scope": _server_setting(
+                "REUTERS_SCOPE", f"{REUTERS_READ_SCOPE} {REUTERS_WRITE_SCOPE}"
+            ),
+            "token_url": _server_setting("REUTERS_TOKEN_URL", REUTERS_TOKEN_URL),
+            "graphql_url": _server_setting(
+                "REUTERS_GRAPHQL_URL", REUTERS_GRAPHQL_URL
+            ),
         }
-        for key, secret_name in secret_names.items():
-            if not config[key] and secret_name in st.secrets:
-                config[key] = str(st.secrets[secret_name]).strip()
+    return {
+        "base_url": _server_setting(f"{prefix}_VIDEO_API_BASE_URL"),
+        "api_key": _server_setting(f"{prefix}_VIDEO_API_KEY"),
+        "search_path": _server_setting(f"{prefix}_VIDEO_SEARCH_PATH", "/videos"),
+        "auth_header": _server_setting(
+            f"{prefix}_VIDEO_AUTH_HEADER", "Authorization"
+        ),
+        "auth_scheme": _server_setting(f"{prefix}_VIDEO_AUTH_SCHEME", "Bearer"),
+    }
+
+
+def newsroom_provider_configured(provider: str, config: Dict[str, str]) -> bool:
+    if provider.lower() == "reuters":
+        return all(
+            config.get(key)
+            for key in (
+                "client_id",
+                "client_secret",
+                "audience",
+                "token_url",
+                "graphql_url",
+            )
+        )
+    return bool(config.get("base_url") and config.get("api_key"))
+
+
+@st.cache_data(ttl=82_800, max_entries=8, show_spinner=False)
+def _reuters_access_token(
+    client_id: str,
+    client_secret: str,
+    audience: str,
+    scope: str,
+    token_url: str,
+) -> str:
+    response = requests.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "audience": audience,
+            "scope": scope,
+        },
+        headers={"Accept": "application/json"},
+        timeout=25,
+    )
+    if not response.ok:
+        try:
+            payload = response.json()
+            detail = payload.get("error_description") or payload.get("error")
+        except Exception:
+            detail = None
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"Reuters authentication failed (HTTP {response.status_code}){suffix}"
+        )
+    token = str(response.json().get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Reuters authentication returned no access token.")
+    return token
+
+
+def _reuters_token(config: Dict[str, str]) -> str:
+    return _reuters_access_token(
+        config["client_id"],
+        config["client_secret"],
+        config["audience"],
+        config["scope"],
+        config["token_url"],
+    )
+
+
+def _reuters_graphql(
+    config: Dict[str, str], document: str, variables: Dict[str, object]
+) -> Dict[str, object]:
+    response = requests.post(
+        config["graphql_url"],
+        headers={
+            "Authorization": f"Bearer {_reuters_token(config)}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        json={"query": document, "variables": variables},
+        timeout=35,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Reuters API returned HTTP {response.status_code}.")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Reuters API returned a non-JSON response.") from exc
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if errors:
+        messages = [
+            str(error.get("message") or "Unknown Reuters GraphQL error")
+            for error in errors
+            if isinstance(error, dict)
+        ]
+        raise RuntimeError("; ".join(messages) or "Reuters GraphQL request failed.")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise RuntimeError("Reuters API returned no data.")
+    return data
+
+
+def _reuters_search_query(config: Dict[str, str], user_query: str) -> str:
+    document = """
+    query InterpretReutersSearch($input: String!) {
+      interpretedSearch(input: $input) {
+        suggestedQuery { queryClause filterClause }
+        remainder
+      }
+    }
+    """
+    try:
+        data = _reuters_graphql(config, document, {"input": user_query})
+        interpreted = data.get("interpretedSearch")
+        suggested = interpreted.get("suggestedQuery") if isinstance(interpreted, dict) else None
+        query_clause = suggested.get("queryClause") if isinstance(suggested, dict) else None
+        if query_clause:
+            return str(query_clause)
     except Exception:
         pass
-    return config
+    escaped = user_query.replace('"', r'\"')
+    return f'main:"{escaped}"'
+
+
+def search_reuters_videos(
+    query: str, config: Dict[str, str]
+) -> Tuple[List[Dict[str, str]], str]:
+    document = """
+    query SearchReutersVideos($query: String!, $limit: Int!) {
+      search(
+        query: $query
+        limit: $limit
+        filter: {mediaTypes: [VIDEO], sources: ["rtrs"]}
+      ) {
+        totalHits
+        items {
+          usn versionedGuid uri headLine caption type profile previewUrl thumbnailUrl
+        }
+      }
+    }
+    """
+    data = _reuters_graphql(
+        config,
+        document,
+        {"query": _reuters_search_query(config, query), "limit": 24},
+    )
+    results = data.get("search")
+    raw_items = results.get("items") if isinstance(results, dict) else []
+    total_hits = int(results.get("totalHits") or 0) if isinstance(results, dict) else 0
+    items: List[Dict[str, str]] = []
+    for raw_item in raw_items or []:
+        if not isinstance(raw_item, dict):
+            continue
+        versioned_guid = str(raw_item.get("versionedGuid") or "").strip()
+        usn = str(raw_item.get("usn") or "").strip()
+        items.append(
+            {
+                "id": versioned_guid or usn,
+                "usn": usn,
+                "versioned_guid": versioned_guid,
+                "provider": "Reuters",
+                "title": str(raw_item.get("headLine") or "Reuters video"),
+                "description": str(raw_item.get("caption") or ""),
+                "duration": "",
+                "preview_url": str(
+                    raw_item.get("previewUrl") or raw_item.get("thumbnailUrl") or ""
+                ),
+                "video_url": "",
+                "downloadable": bool(versioned_guid or usn),
+            }
+        )
+    return items, f"Found {total_hits:,} entitled Reuters video(s); showing {len(items)}."
 
 
 def _first_text(mapping: Dict[str, object], keys: Tuple[str, ...]) -> str:
@@ -394,8 +583,13 @@ def normalise_newsroom_video_items(payload: object, provider: str) -> List[Dict[
 
 def search_newsroom_videos(provider: str, query: str) -> Tuple[List[Dict[str, str]], str]:
     config = newsroom_video_api_config(provider)
-    if not config["base_url"] or not config["api_key"]:
+    if not newsroom_provider_configured(provider, config):
         return [], f"{provider} API access is not configured on this server."
+    if provider.lower() == "reuters":
+        try:
+            return search_reuters_videos(query, config)
+        except Exception as exc:
+            return [], f"Reuters search failed: {exc}"
     endpoint = f"{config['base_url'].rstrip('/')}/{config['search_path'].lstrip('/')}"
     auth_value = f"{config['auth_scheme']} {config['api_key']}".strip()
     headers = {config["auth_header"]: auth_value, "Accept": "application/json"}
@@ -413,13 +607,85 @@ def search_newsroom_videos(provider: str, query: str) -> Tuple[List[Dict[str, st
         return [], f"{provider} search failed: {exc}"
 
 
+def _download_reuters_video(
+    item: Dict[str, str], config: Dict[str, str]
+) -> Tuple[Optional[Path], str]:
+    item_id = str(item.get("versioned_guid") or item.get("id") or "").strip()
+    if not item_id:
+        return None, "The Reuters result does not include a downloadable item ID."
+    mutation = """
+    mutation DownloadReutersPackage($itemId: ID!) {
+      downloadPackage(itemId: $itemId) { url status }
+    }
+    """
+    try:
+        data = _reuters_graphql(config, mutation, {"itemId": item_id})
+        package = data.get("downloadPackage")
+        if not isinstance(package, dict):
+            return None, "Reuters did not return a download package."
+        package_url = str(package.get("url") or "").strip()
+        package_status = str(package.get("status") or "").strip()
+        if not package_url:
+            suffix = f" Current status: {package_status}." if package_status else ""
+            return None, f"Reuters is still preparing this package.{suffix} Try again shortly."
+        parsed = urlparse(package_url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            return None, "Reuters returned an invalid package URL."
+        headers: Dict[str, str] = {}
+        if parsed.hostname.endswith("reutersconnect.com"):
+            headers["Authorization"] = f"Bearer {_reuters_token(config)}"
+        response = requests.get(package_url, headers=headers, stream=True, timeout=120)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").lower()
+        package_path = WORK_DIR / f"reuters_{safe_name(str(item.get('usn') or 'video'))}.package"
+        with package_path.open("wb") as output:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    output.write(chunk)
+        target_stem = f"reuters_{safe_name(str(item.get('usn') or 'video'))}"
+        if zipfile.is_zipfile(package_path):
+            with zipfile.ZipFile(package_path) as archive:
+                candidates = [
+                    member
+                    for member in archive.infolist()
+                    if not member.is_dir()
+                    and Path(member.filename).suffix.lower()
+                    in {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+                ]
+                if not candidates:
+                    package_path.unlink(missing_ok=True)
+                    return None, "The Reuters package did not contain a supported video file."
+                selected = max(candidates, key=lambda member: member.file_size)
+                target = UPLOAD_DIR / f"{target_stem}{Path(selected.filename).suffix.lower()}"
+                with archive.open(selected) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+            package_path.unlink(missing_ok=True)
+        else:
+            if "json" in content_type or "text/html" in content_type:
+                package_path.unlink(missing_ok=True)
+                return None, "Reuters returned metadata instead of the licensed video package."
+            suffix = Path(parsed.path).suffix.lower()
+            if suffix not in {".mp4", ".mov", ".m4v", ".webm", ".mkv"}:
+                suffix = ".mp4"
+            target = UPLOAD_DIR / f"{target_stem}{suffix}"
+            package_path.replace(target)
+        if not target.exists() or target.stat().st_size < 1024:
+            target.unlink(missing_ok=True)
+            return None, "The downloaded Reuters video was empty."
+        return target, f"Imported {item.get('title') or target.name} from Reuters."
+    except Exception as exc:
+        return None, f"Could not import the Reuters video: {exc}"
+
+
 def download_newsroom_video(item: Dict[str, str]) -> Tuple[Optional[Path], str]:
     provider = str(item.get("provider") or "Newsroom")
+    config = newsroom_video_api_config(provider)
+    if provider.lower() == "reuters":
+        return _download_reuters_video(item, config)
     video_url = str(item.get("video_url") or "").strip()
     parsed = urlparse(video_url)
     if parsed.scheme != "https" or not parsed.hostname:
         return None, "The selected feed item does not include a valid HTTPS download URL."
-    config = newsroom_video_api_config(provider)
     auth_value = f"{config['auth_scheme']} {config['api_key']}".strip()
     headers = {config["auth_header"]: auth_value} if config.get("api_key") else {}
     target = UPLOAD_DIR / f"{safe_name(provider.lower())}_{safe_name(str(item.get('id') or 'video'))}.mp4"
@@ -4105,13 +4371,21 @@ def main() -> None:
         else:
             provider = "Reuters" if source_method.startswith("Reuters") else "ANI"
             provider_config = newsroom_video_api_config(provider)
-            if not provider_config["base_url"] or not provider_config["api_key"]:
-                st.info(
-                    f"{provider} library access requires your licensed API base URL "
-                    f"and key. Configure `{provider.upper()}_VIDEO_API_BASE_URL` and "
-                    f"`{provider.upper()}_VIDEO_API_KEY` in the server environment or "
-                    ".streamlit/secrets.toml."
-                )
+            provider_ready = newsroom_provider_configured(provider, provider_config)
+            if not provider_ready:
+                if provider == "Reuters":
+                    st.info(
+                        "Reuters library access requires `REUTERS_CLIENT_ID`, "
+                        "`REUTERS_CLIENT_SECRET`, and `REUTERS_AUDIENCE` in the server "
+                        "environment or `.streamlit/secrets.toml`."
+                    )
+                else:
+                    st.info(
+                        f"{provider} library access requires your licensed API base URL "
+                        f"and key. Configure `{provider.upper()}_VIDEO_API_BASE_URL` and "
+                        f"`{provider.upper()}_VIDEO_API_KEY` in the server environment or "
+                        ".streamlit/secrets.toml."
+                    )
             search_columns = st.columns([0.78, 0.22], vertical_alignment="bottom")
             provider_query = search_columns[0].text_input(
                 f"Search {provider} videos",
@@ -4120,13 +4394,9 @@ def main() -> None:
             )
             if search_columns[1].button(
                 "Search library",
-                use_container_width=True,
+                width="stretch",
                 key=f"partner_{provider.lower()}_search",
-                disabled=not (
-                    provider_query.strip()
-                    and provider_config["base_url"]
-                    and provider_config["api_key"]
-                ),
+                disabled=not (provider_query.strip() and provider_ready),
             ):
                 with st.spinner(f"Searching your {provider} entitlement..."):
                     results, search_message = search_newsroom_videos(
@@ -4146,7 +4416,7 @@ def main() -> None:
                 with st.container(border=True):
                     card_columns = st.columns([0.22, 0.58, 0.20], vertical_alignment="center")
                     if result.get("preview_url"):
-                        card_columns[0].image(result["preview_url"], use_container_width=True)
+                        card_columns[0].image(result["preview_url"], width="stretch")
                     else:
                         card_columns[0].caption(f"{provider} VIDEO")
                     card_columns[1].markdown(f"**{result['title']}**")
@@ -4155,10 +4425,12 @@ def main() -> None:
                     if result.get("duration"):
                         card_columns[1].caption(f"Duration: {result['duration']}")
                     if card_columns[2].button(
-                        "Use this video",
-                        use_container_width=True,
+                        "License & import" if provider == "Reuters" else "Use this video",
+                        width="stretch",
                         key=f"partner_use_{provider.lower()}_{result_index}_{result['id']}",
-                        disabled=not bool(result.get("video_url")),
+                        disabled=not bool(
+                            result.get("downloadable") or result.get("video_url")
+                        ),
                     ):
                         with st.spinner(f"Importing the licensed {provider} video..."):
                             imported_path, import_message = download_newsroom_video(result)

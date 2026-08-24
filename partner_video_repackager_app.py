@@ -102,7 +102,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Reuters-2026.08.24.1"
+APP_BUILD_ID = "Reuters-2026.08.24.2"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -325,14 +325,38 @@ def save_upload(uploaded_file) -> Path:
     return target
 
 
+def _find_nested_secret(container: object, name: str, depth: int = 0) -> str:
+    """Find an exact secret name even when an existing TOML table contains it."""
+    if depth > 6:
+        return ""
+    try:
+        if name in container:  # type: ignore[operator]
+            value = container[name]  # type: ignore[index]
+            if not hasattr(value, "items"):
+                return str(value).strip()
+    except Exception:
+        pass
+    try:
+        children = list(container.values())  # type: ignore[union-attr]
+    except Exception:
+        return ""
+    for child in children:
+        if hasattr(child, "items"):
+            found = _find_nested_secret(child, name, depth + 1)
+            if found:
+                return found
+    return ""
+
+
 def _server_setting(name: str, default: str = "") -> str:
     """Read one server-only setting from the environment or Streamlit secrets."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
     try:
-        if name in st.secrets:
-            return str(st.secrets[name]).strip()
+        value = _find_nested_secret(st.secrets, name)
+        if value:
+            return value
     except Exception:
         pass
     return default
@@ -4389,10 +4413,19 @@ def main() -> None:
             provider_ready = newsroom_provider_configured(provider, provider_config)
             if not provider_ready:
                 if provider == "Reuters":
+                    missing_credentials = [
+                        label
+                        for key, label in (
+                            ("client_id", "Client ID"),
+                            ("client_secret", "Client secret"),
+                            ("audience", "Audience"),
+                        )
+                        if not provider_config.get(key)
+                    ]
                     st.info(
-                        "Reuters library access requires `REUTERS_CLIENT_ID`, "
-                        "`REUTERS_CLIENT_SECRET`, and `REUTERS_AUDIENCE` in the server "
-                        "environment or `.streamlit/secrets.toml`."
+                        "Reuters credentials not detected by the running app: "
+                        + ", ".join(missing_credentials)
+                        + "."
                     )
                 else:
                     st.info(
@@ -4401,6 +4434,10 @@ def main() -> None:
                         f"`{provider.upper()}_VIDEO_API_KEY` in the server environment or "
                         ".streamlit/secrets.toml."
                     )
+            elif provider == "Reuters":
+                st.success(
+                    "Reuters credentials detected: Client ID, Client secret, and Audience."
+                )
             search_columns = st.columns([0.78, 0.22], vertical_alignment="bottom")
             provider_query = search_columns[0].text_input(
                 f"Search {provider} videos",

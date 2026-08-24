@@ -4648,7 +4648,6 @@ def main() -> None:
         editor_video_duration = raw_video_duration
         if meta:
             st.caption(f"{int(meta.get('width', 0))}x{int(meta.get('height', 0))} · {compact_time(meta.get('duration', 0))} · {meta.get('fps', 0):.2f} fps")
-        st.video(str(source_path))
 
     with workspace_tabs[1]:
         render_stage_header(
@@ -5175,8 +5174,11 @@ def main() -> None:
         render_stage_header(
             5,
             "Edit the raw video",
-            "Arrange media, control audio, remove sections, add pauses and place slugs.",
+            "Edit directly on the canvas. Open a tool only when you need it.",
         )
+        # Reserve the primary editor position before reading its supporting
+        # controls. The canvas is populated later once every layer is known.
+        video_canvas_slot = st.empty()
         template_layout = "two_column"
         latest_editor_preview = Path(
             str(st.session_state.get("partner_latest_preview") or "")
@@ -5248,11 +5250,16 @@ def main() -> None:
             "start": float(raw_audio_start),
             "end": float(raw_audio_end),
         }
-        st.caption(
+        media_panel = st.expander(
+            "Media and branding",
+            icon=":material/add_photo_alternate:",
+            expanded=False,
+        )
+        media_panel.caption(
             "The top PNG and slug banner are separate canvas layers. Move and "
             "resize either one independently."
         )
-        selected_property = st.selectbox(
+        selected_property = media_panel.selectbox(
             "Property logo",
             list(PROPERTY_LOGO_FILES),
             key="partner_selected_property",
@@ -5272,15 +5279,17 @@ def main() -> None:
             st.session_state["partner_last_selected_property"] = selected_property
         selected_logo_path = property_logo_path(selected_property)
         if selected_logo_path:
-            st.caption(f"Using local {selected_property} logo: {selected_logo_path.name}")
+            media_panel.caption(
+                f"Using local {selected_property} logo: {selected_logo_path.name}"
+            )
         else:
             expected_logo = PROPERTY_LOGO_DIR / PROPERTY_LOGO_FILES[selected_property]
-            st.warning(
+            media_panel.warning(
                 f"Add the {selected_property} logo at `{expected_logo}`. The layout "
                 "will work without it until that file is available."
             )
         if "logo" in hidden_template_components and selected_logo_path:
-            if st.button(
+            if media_panel.button(
                 ":material/add_photo_alternate: Add selected logo back",
                 key="partner_restore_selected_logo",
                 width="stretch",
@@ -5294,7 +5303,9 @@ def main() -> None:
                     + 1
                 )
                 st.rerun()
-        template_columns = st.columns([0.42, 0.58], vertical_alignment="top")
+        template_columns = media_panel.columns(
+            [0.42, 0.58], vertical_alignment="top"
+        )
         template_header_upload = template_columns[0].file_uploader(
             "Top PNG",
             type=["png"],
@@ -5314,7 +5325,7 @@ def main() -> None:
             ),
             help="Images and videos play in order and repeat for the complete output.",
         )
-        template_photo_seconds = st.number_input(
+        template_photo_seconds = media_panel.number_input(
             "Default seconds per floating item",
             min_value=0.5,
             max_value=60.0,
@@ -5367,7 +5378,9 @@ def main() -> None:
                 continue
             media_path = Path(str(media_item["path"]))
             has_audio = media_has_audio(str(media_path), media_path.stat().st_mtime_ns)
-            floating_audio_columns = st.columns([0.62, 0.38], vertical_alignment="bottom")
+            floating_audio_columns = media_panel.columns(
+                [0.62, 0.38], vertical_alignment="bottom"
+            )
             current_audio_mode = str(media_item.get("audio_mode") or "mix")
             if not bool(media_item.get("use_clip_audio")):
                 current_audio_mode = "muted"
@@ -5579,8 +5592,7 @@ def main() -> None:
             )
         # The canvas is populated after the slug controls have been read so that
         # raw footage, floating media, logos and every slug share one editor.
-        # st.empty keeps that unified canvas in this primary position.
-        video_canvas_slot = st.empty()
+        # st.empty keeps that unified canvas in the primary position above.
 
         if "partner_source_cuts" not in st.session_state:
             st.session_state["partner_source_cuts"] = []
@@ -5597,7 +5609,7 @@ def main() -> None:
             st.error("The selected removals delete the entire raw video. Keep at least 0.1 seconds.")
             return
         removed_duration = raw_video_duration - edited_source_duration
-        st.success(
+        st.caption(
             f"Raw-video base after cuts: {compact_time(edited_source_duration)}"
             + (
                 f" · {removed_duration:.1f} seconds removed"
@@ -5606,13 +5618,17 @@ def main() -> None:
             )
         )
 
-        st.markdown("**When narration is longer than the edited raw video**")
+        playback_panel = st.expander(
+            "Playback behaviour",
+            icon=":material/replay:",
+            expanded=False,
+        )
         tail_mode_labels = {
             "End with the edited raw video (no loop)": "end",
             "Continue on a black background (no loop)": "black",
             "Loop the edited raw video": "loop",
         }
-        selected_tail_mode_label = st.selectbox(
+        selected_tail_mode_label = playback_panel.selectbox(
             "End-of-video behaviour",
             list(tail_mode_labels),
             index=0,
@@ -5624,29 +5640,35 @@ def main() -> None:
         )
         video_tail_mode = tail_mode_labels[selected_tail_mode_label]
         if video_tail_mode == "end":
-            st.caption(
+            playback_panel.caption(
                 "The final video ends with the edited raw footage. Any remaining "
                 "voiceover after that point is not included."
             )
         elif video_tail_mode == "black":
-            st.caption(
+            playback_panel.caption(
                 "The complete voiceover is retained, with a black background after "
                 "the edited raw footage ends."
             )
         else:
-            st.caption(
+            playback_panel.caption(
                 "Only the edited raw-video base repeats; removed sections remain excluded."
             )
 
-        st.markdown("**Editor audio timeline**")
-        st.caption(
+        voice_timing_panel = st.expander(
+            "Voiceover timing",
+            icon=":material/graphic_eq:",
+            expanded=False,
+        )
+        voice_timing_panel.caption(
             "Set narration start and pause windows directly alongside the canvas. "
             "After every pause, voiceover resumes from the exact point where it stopped."
         )
         voiceover_enabled = voice_choice != "No voiceover — use original video audio"
         if not voiceover_enabled:
-            st.info("Voiceover is off, so the raw video's original audio remains active.")
-        voiceover_start = st.number_input(
+            voice_timing_panel.info(
+                "Voiceover is off, so the raw video's original audio remains active."
+            )
+        voiceover_start = voice_timing_panel.number_input(
             "Voiceover starts at final-video timestamp (seconds)",
             min_value=0.0,
             max_value=86400.0,
@@ -5670,7 +5692,9 @@ def main() -> None:
             float(voiceover_start) + float(edited_source_duration),
             *existing_pause_ends,
         )
-        pause_header_columns = st.columns([0.72, 0.28], vertical_alignment="center")
+        pause_header_columns = voice_timing_panel.columns(
+            [0.72, 0.28], vertical_alignment="center"
+        )
         pause_header_columns[0].caption(
             "Add a pause window only when needed. Choose where narration pauses and resumes."
         )
@@ -5729,7 +5753,9 @@ def main() -> None:
                 float(pause.get("start") or voiceover_start),
             )
             pause_end = pause_start + max(0.1, float(pause.get("duration") or 0.1))
-            pause_columns = st.columns([1, 0.2], vertical_alignment="bottom")
+            pause_columns = voice_timing_panel.columns(
+                [1, 0.2], vertical_alignment="bottom"
+            )
             pause_window = pause_columns[0].slider(
                 f"Pause window {pause_index + 1}: Pause from → Resume at",
                 min_value=float(voiceover_start),
@@ -5751,7 +5777,7 @@ def main() -> None:
             )
             pause["start"] = float(pause_window[0])
             pause["duration"] = float(pause_window[1] - pause_window[0])
-            with st.container(border=True):
+            with voice_timing_panel.container(border=True):
                 st.markdown(f"**Optional script and audio during pause {pause_index + 1}**")
                 pause_insert_labels = {"Keep this pause silent": "silent"}
                 if voice_choice != "Upload completed voiceover":
@@ -5839,7 +5865,7 @@ def main() -> None:
             ],
         }
         if voice_pauses_for_export:
-            st.info(
+            voice_timing_panel.info(
                 "Narration pauses: "
                 + " · ".join(
                     f"{compact_time(start)} → {compact_time(start + duration)}"

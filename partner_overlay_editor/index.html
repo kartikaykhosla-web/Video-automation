@@ -456,7 +456,22 @@
 
     const post = (type, payload = {}) => window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
     const ready = () => post("streamlit:componentReady", {apiVersion: 1});
-    const setHeight = () => post("streamlit:setFrameHeight", {height: Math.ceil(document.body.scrollHeight + 4)});
+    let pendingHeightFrame = null;
+    let lastFrameHeight = 0;
+    const setHeight = () => {
+      if (pendingHeightFrame !== null) cancelAnimationFrame(pendingHeightFrame);
+      pendingHeightFrame = requestAnimationFrame(() => {
+        pendingHeightFrame = null;
+        const shell = document.querySelector(".editor-shell");
+        const shellHeight = shell
+          ? Math.max(shell.scrollHeight, shell.getBoundingClientRect().height)
+          : 0;
+        const nextHeight = Math.ceil(Math.max(shellHeight, document.body.scrollHeight) + 10);
+        if (Math.abs(nextHeight - lastFrameHeight) < 2) return;
+        lastFrameHeight = nextHeight;
+        post("streamlit:setFrameHeight", {height: nextHeight});
+      });
+    };
     const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
     const videoDuration = () => Math.max(.1, Number(args.video_duration) || 60);
     const sourceDuration = () => Math.max(.1, Number(args.source_duration) || videoDuration());
@@ -1175,6 +1190,7 @@
         };
         removedCutList.appendChild(row);
       });
+      setHeight();
     }
 
     function sourceCutTimeFromPointer(event) {
@@ -1294,6 +1310,12 @@
       if(!args.images.some(image=>String(image.id)===String(selectedId))) selectedId=args.images[0]?.id??null;
       renderAll();
     });
+    const editorShell = document.querySelector(".editor-shell");
+    if (editorShell && typeof ResizeObserver !== "undefined") {
+      const shellResizeObserver = new ResizeObserver(() => setHeight());
+      shellResizeObserver.observe(editorShell);
+    }
+    window.addEventListener("load", setHeight);
     ready(); setHeight();
   </script>
 </body>

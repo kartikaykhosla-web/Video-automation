@@ -201,6 +201,7 @@
       position:absolute; top:4px; bottom:4px; z-index:5; min-width:4px;
       border:2px solid #ff5968; border-radius:6px; background:rgba(255,75,88,.22);
       box-shadow:0 0 0 1px rgba(255,255,255,.12) inset; pointer-events:none;
+      will-change:left,width;
     }
     .source-cut-selection::before,.source-cut-selection::after {
       content:""; position:absolute; top:50%; width:7px; height:18px; border-radius:4px;
@@ -465,6 +466,8 @@
     let sourceCutSelectionStart = 0;
     let sourceCutSelectionEnd = 5;
     let sourceCutDrag = null;
+    let sourceCutPointerFrame = null;
+    let sourceCutPendingTime = null;
     let advancedToolsVisible = false;
     let timelineExpanded = false;
 
@@ -1249,30 +1252,80 @@
       if (sourceVideo && sourceVideo.readyState >= 1) {
         try { sourceVideo.currentTime = Math.min(sourcePlayhead, Math.max(0, (sourceVideo.duration || sourcePlayhead) - .03)); } catch (_) {}
       }
-      renderSequence();
+      sourceScrubber.value = String(sourcePlayhead);
+      sourceTime.textContent = `${formatTime(sourcePlayhead)} / ${formatTime(sourceDuration())}`;
+      document.querySelectorAll(".sequence-playhead").forEach(playhead => {
+        playhead.style.left = `${clamp(sourcePlayhead / sourceDuration(), 0, 1) * 100}%`;
+      });
     }
     sourceScrubber.addEventListener("input", event => seekSourcePreview(event.target.value));
     sourceCutTrack.addEventListener("pointerdown", event => {
       event.preventDefault();
-      const anchor = sourceCutTimeFromPointer(event);
-      sourceCutDrag = {pointerId: event.pointerId, anchor};
+      const rect = sourceCutTrack.getBoundingClientRect();
+      const pointerTime = sourceCutTimeFromPointer(event);
+      const startX = rect.left + sourceCutSelectionStart / sourceDuration() * rect.width;
+      const endX = rect.left + sourceCutSelectionEnd / sourceDuration() * rect.width;
+      const handleRadius = Math.max(12, Math.min(22, rect.width * .025));
+      let mode = "new";
+      if (Math.abs(event.clientX - startX) <= handleRadius) mode = "start";
+      else if (Math.abs(event.clientX - endX) <= handleRadius) mode = "end";
+      else if (event.clientX > startX && event.clientX < endX) mode = "move";
+      sourceCutDrag = {
+        pointerId: event.pointerId,
+        mode,
+        anchor: pointerTime,
+        initialStart: sourceCutSelectionStart,
+        initialEnd: sourceCutSelectionEnd,
+      };
       sourceCutTrack.setPointerCapture(event.pointerId);
-      setSourceCutSelection(anchor, Math.min(sourceDuration(), anchor + .1), true);
+      if (mode === "new") {
+        setSourceCutSelection(pointerTime, Math.min(sourceDuration(), pointerTime + .1), true);
+      } else {
+        seekSourcePreview(pointerTime);
+      }
     });
+    const applySourceCutPointerTime = currentTime => {
+      if (!sourceCutDrag || currentTime === null) return;
+      const drag = sourceCutDrag;
+      if (drag.mode === "start") {
+        setSourceCutSelection(Math.min(currentTime, drag.initialEnd - .1), drag.initialEnd, false);
+      } else if (drag.mode === "end") {
+        setSourceCutSelection(drag.initialStart, Math.max(currentTime, drag.initialStart + .1), false);
+      } else if (drag.mode === "move") {
+        const width = drag.initialEnd - drag.initialStart;
+        const requestedStart = drag.initialStart + currentTime - drag.anchor;
+        const nextStart = clamp(requestedStart, 0, sourceDuration() - width);
+        setSourceCutSelection(nextStart, nextStart + width, false);
+      } else {
+        setSourceCutSelection(
+          Math.min(drag.anchor, currentTime),
+          Math.max(drag.anchor, currentTime),
+          false
+        );
+      }
+    };
     sourceCutTrack.addEventListener("pointermove", event => {
       if (!sourceCutDrag || event.pointerId !== sourceCutDrag.pointerId) return;
-      const currentTime = sourceCutTimeFromPointer(event);
-      setSourceCutSelection(
-        Math.min(sourceCutDrag.anchor, currentTime),
-        Math.max(sourceCutDrag.anchor, currentTime),
-        false
-      );
+      sourceCutPendingTime = sourceCutTimeFromPointer(event);
+      if (sourceCutPointerFrame !== null) return;
+      sourceCutPointerFrame = requestAnimationFrame(() => {
+        sourceCutPointerFrame = null;
+        applySourceCutPointerTime(sourceCutPendingTime);
+      });
     });
-    sourceCutTrack.addEventListener("pointerup", event => {
+    const finishSourceCutDrag = event => {
       if (!sourceCutDrag || event.pointerId !== sourceCutDrag.pointerId) return;
+      if (sourceCutPointerFrame !== null) {
+        cancelAnimationFrame(sourceCutPointerFrame);
+        sourceCutPointerFrame = null;
+      }
+      applySourceCutPointerTime(sourceCutPendingTime);
       sourceCutDrag = null;
+      sourceCutPendingTime = null;
       setSourceCutMessage();
-    });
+    };
+    sourceCutTrack.addEventListener("pointerup", finishSourceCutDrag);
+    sourceCutTrack.addEventListener("pointercancel", finishSourceCutDrag);
     sourceCutStart.addEventListener("change", () => setSourceCutSelection(
       Number(sourceCutStart.value), Number(sourceCutEnd.value), true
     ));

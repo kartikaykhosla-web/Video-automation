@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.01.2"
+APP_BUILD_ID = "Editor-2026.09.01.3"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -5206,9 +5206,9 @@ def main() -> None:
         )
         st.divider()
         if st.button(
-            "Return to Editor →",
+            "Continue to Publish →",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=not voice_workspace_ready,
             key="partner_continue_to_timeline",
             help=(
@@ -5221,10 +5221,10 @@ def main() -> None:
                 """
                 <script>
                 const tabs = window.parent.document.querySelectorAll('[role="tab"]');
-                const timelineTab = Array.from(tabs).find(
-                    (tab) => tab.textContent.trim() === 'Editor'
+                const publishTab = Array.from(tabs).find(
+                    (tab) => tab.textContent.trim() === 'Publish'
                 );
-                if (timelineTab) timelineTab.click();
+                if (publishTab) publishTab.click();
                 </script>
                 """,
                 height=0,
@@ -7094,19 +7094,19 @@ def main() -> None:
 
         st.divider()
         if st.button(
-            "Continue to Publish →",
+            "Continue to Script & voice →",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="partner_continue_to_review",
         ):
             components.html(
                 """
                 <script>
                 const tabs = window.parent.document.querySelectorAll('[role="tab"]');
-                const reviewTab = Array.from(tabs).find(
-                    (tab) => tab.textContent.trim() === 'Publish'
+                const scriptVoiceTab = Array.from(tabs).find(
+                    (tab) => tab.textContent.trim() === 'Script & voice'
                 );
-                if (reviewTab) reviewTab.click();
+                if (scriptVoiceTab) scriptVoiceTab.click();
                 </script>
                 """,
                 height=0,

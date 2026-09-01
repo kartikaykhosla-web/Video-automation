@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.08.31.3"
+APP_BUILD_ID = "Editor-2026.09.01.1"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -168,6 +168,10 @@ OUTPUT_HEIGHT = 1080
 PUBLISHER_SLUG_FONTS: Dict[str, Dict[str, str]] = {
     "Hindi · Noto Sans Devanagari Bold": {"file": "NotoSansDevanagari.ttf", "variation": "Bold"},
     "Hindi · Noto Serif Devanagari Bold": {"file": "NotoSerifDevanagari.ttf", "variation": "Bold"},
+    "Hindi · Mukta Regular": {"file": "Mukta-Regular.ttf"},
+    "Hindi · Mukta Medium": {"file": "Mukta-Medium.ttf"},
+    "Hindi · Mukta SemiBold": {"file": "Mukta-SemiBold.ttf"},
+    "Hindi · Mukta Bold": {"file": "Mukta-Bold.ttf"},
     "Hindi · Mukta ExtraBold": {"file": "Mukta-ExtraBold.ttf"},
     "Hindi · Teko Bold": {"file": "Teko.ttf", "variation": "Bold"},
     "Hindi · Yantramanav Bold": {"file": "Yantramanav-Bold.ttf"},
@@ -1222,6 +1226,31 @@ def kept_source_ranges(
     if cursor < source_duration - 0.01:
         kept.append((cursor, source_duration))
     return kept
+
+
+def cuts_from_kept_ranges(
+    keeps: List[Tuple[float, float]],
+    source_duration: float,
+) -> List[Tuple[float, float]]:
+    """Return the cut ranges needed to retain only the selected source ranges."""
+    cuts: List[Tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in keeps:
+        if start > cursor + 0.01:
+            cuts.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < source_duration - 0.01:
+        cuts.append((cursor, source_duration))
+    return cuts
+
+
+def reorder_session_list(state_key: str, index: int, offset: int) -> None:
+    """Move one session-backed list item without forcing an extra app rerun."""
+    values = list(st.session_state.get(state_key, []))
+    destination = index + offset
+    if 0 <= index < len(values) and 0 <= destination < len(values):
+        values[index], values[destination] = values[destination], values[index]
+        st.session_state[state_key] = values
 
 
 def normalise_voice_pauses(
@@ -4423,6 +4452,22 @@ def main() -> None:
             "Bring in the source",
             "Upload a local file or choose licensed Reuters/ANI footage.",
         )
+        existing_source_value = st.session_state.get("partner_video_path")
+        existing_source_ready = bool(
+            existing_source_value
+            and Path(str(existing_source_value)).is_file()
+        )
+        source_picker = st.expander(
+            "Change or import source video"
+            if existing_source_ready
+            else "Choose source video",
+            icon=":material/video_library:",
+            expanded=not existing_source_ready,
+        )
+        # Keep the complete provider picker inside one collapsible section. The
+        # expander is collapsed automatically after an import, but can always be
+        # reopened to replace the source.
+        source_picker.__enter__()
         source_method = st.radio(
             "Video source",
             ["Upload raw video", "Reuters library", "ANI library"],
@@ -4585,11 +4630,16 @@ def main() -> None:
                                     "partner_voiceover_preview_path",
                                     "partner_latest_export",
                                     "partner_latest_preview",
+                                    "partner_source_cuts",
+                                    "partner_source_keeps",
+                                    "partner_source_trim_mode",
                                 ):
                                     st.session_state.pop(dependent_key, None)
                                 st.success(import_message)
                                 st.rerun()
                             st.error(import_message)
+
+        source_picker.__exit__(None, None, None)
 
         source_path: Optional[Path] = None
         if uploaded:
@@ -4611,6 +4661,8 @@ def main() -> None:
                 st.session_state.pop("partner_slug_enabled", None)
                 st.session_state.pop("partner_slug_overlays", None)
                 st.session_state.pop("partner_source_cuts", None)
+                st.session_state.pop("partner_source_keeps", None)
+                st.session_state.pop("partner_source_trim_mode", None)
                 st.session_state.pop("partner_voice_pauses", None)
                 st.session_state.pop("partner_voiceover_start", None)
                 st.session_state.pop("partner_video_tail_mode", None)
@@ -4651,6 +4703,13 @@ def main() -> None:
             st.caption(f"{int(meta.get('width', 0))}x{int(meta.get('height', 0))} · {compact_time(meta.get('duration', 0))} · {meta.get('fps', 0):.2f} fps")
 
     with workspace_tabs[1]:
+        st.session_state.setdefault("partner_script_voice_stage", "Transcript")
+        st.segmented_control(
+            "Script and voice step",
+            ["Transcript", "Voiceover"],
+            key="partner_script_voice_stage",
+            label_visibility="collapsed",
+        )
         render_stage_header(
             2,
             "Prepare the story",
@@ -4737,24 +4796,15 @@ def main() -> None:
             label_visibility="collapsed",
         )
         if edited_transcript.strip():
-            if st.button(
-                "Continue to voice settings ↓",
+            st.button(
+                "Approve transcript and continue to voiceover →",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="partner_continue_to_voice",
-            ):
-                components.html(
-                    """
-                    <script>
-                    const tabs = window.parent.document.querySelectorAll('[role="tab"]');
-                    const voiceTab = Array.from(tabs).find(
-                        (tab) => tab.textContent.trim() === 'Script & voice'
-                    );
-                    if (voiceTab) voiceTab.click();
-                    </script>
-                    """,
-                    height=0,
-                )
+                on_click=lambda: st.session_state.update(
+                    partner_script_voice_stage="Voiceover"
+                ),
+            )
 
     with workspace_tabs[1]:
         render_stage_header(
@@ -4774,8 +4824,17 @@ def main() -> None:
             "Voiceover",
             voice_options,
             index=0,
+            key="partner_voice_choice",
             label_visibility="collapsed",
+            disabled=(
+                st.session_state.get("partner_script_voice_stage") != "Voiceover"
+                or not edited_transcript.strip()
+            ),
         )
+        if st.session_state.get("partner_script_voice_stage") != "Voiceover":
+            st.info(
+                "Approve the transcript above to unlock voice selection and audio preview."
+            )
 
         voiceover_upload = None
         producer_consent = False
@@ -5374,6 +5433,34 @@ def main() -> None:
             dict(item) for item in st.session_state.get("partner_template_loop_items", [])
             if Path(str(item.get("path") or "")).is_file()
         ]
+        if template_loop_items:
+            media_panel.markdown("**Floating media order**")
+            media_panel.caption(
+                "Items play from top to bottom. Reorder them without uploading again."
+            )
+        for media_index, media_item in enumerate(template_loop_items):
+            order_columns = media_panel.columns(
+                [0.74, 0.13, 0.13], vertical_alignment="center"
+            )
+            order_columns[0].markdown(
+                f"**{media_index + 1}. {media_item.get('name') or Path(str(media_item['path'])).name}**"
+            )
+            order_columns[1].button(
+                "Up",
+                icon=":material/arrow_upward:",
+                key=f"partner_floating_up_{media_index}_{Path(str(media_item['path'])).name}",
+                disabled=media_index == 0,
+                on_click=reorder_session_list,
+                args=("partner_template_loop_items", media_index, -1),
+            )
+            order_columns[2].button(
+                "Down",
+                icon=":material/arrow_downward:",
+                key=f"partner_floating_down_{media_index}_{Path(str(media_item['path'])).name}",
+                disabled=media_index == len(template_loop_items) - 1,
+                on_click=reorder_session_list,
+                args=("partner_template_loop_items", media_index, 1),
+            )
         for media_index, media_item in enumerate(template_loop_items):
             if media_item.get("media_type") != "video":
                 continue
@@ -5597,12 +5684,33 @@ def main() -> None:
 
         if "partner_source_cuts" not in st.session_state:
             st.session_state["partner_source_cuts"] = []
+        if "partner_source_keeps" not in st.session_state:
+            st.session_state["partner_source_keeps"] = []
+        st.session_state.setdefault("partner_source_trim_mode", "remove")
         source_cut_items: List[Dict[str, object]] = st.session_state[
             "partner_source_cuts"
         ]
+        source_keep_items: List[Dict[str, object]] = st.session_state[
+            "partner_source_keeps"
+        ]
         st.session_state["partner_source_cuts"] = source_cut_items
-        source_cuts_for_export = normalise_cut_ranges(
+        source_cuts_selected = normalise_cut_ranges(
             source_cut_items, raw_video_duration
+        )
+        source_keeps_selected = normalise_cut_ranges(
+            source_keep_items, raw_video_duration
+        )
+        source_trim_mode = (
+            "keep"
+            if st.session_state.get("partner_source_trim_mode") == "keep"
+            else "remove"
+        )
+        source_cuts_for_export = (
+            cuts_from_kept_ranges(source_keeps_selected, raw_video_duration)
+            if source_trim_mode == "keep" and source_keeps_selected
+            else source_cuts_selected
+            if source_trim_mode == "remove"
+            else []
         )
         kept_ranges = kept_source_ranges(source_cuts_for_export, raw_video_duration)
         edited_source_duration = sum(end - start for start, end in kept_ranges)
@@ -5701,7 +5809,7 @@ def main() -> None:
         )
         with pause_header_columns[1].popover(
             "＋ Add pause window",
-            use_container_width=True,
+            width="stretch",
             disabled=not voiceover_enabled,
         ):
             st.caption("Drag both ends to define the silent window.")
@@ -5729,7 +5837,7 @@ def main() -> None:
             if st.button(
                 "Add this pause window",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="partner_confirm_voice_pause",
                 disabled=new_pause_window[1] <= new_pause_window[0],
             ):
@@ -5743,8 +5851,7 @@ def main() -> None:
                     }
                 )
                 st.session_state["partner_voice_pauses"] = voice_pause_items
-                st.session_state.pop("partner_new_voice_pause_window", None)
-                st.rerun()
+                st.toast("Pause window added", icon=":material/pause_circle:")
 
         remove_pause_id: Optional[str] = None
         for pause_index, pause in enumerate(voice_pause_items):
@@ -5769,7 +5876,7 @@ def main() -> None:
             if pause_columns[1].button(
                 "Remove",
                 key=f"partner_delete_voice_pause_{pause_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 remove_pause_id = pause_id
             pause_columns[0].caption(
@@ -5848,10 +5955,11 @@ def main() -> None:
                 pause["insert_script"] = insert_script.strip()
 
         if remove_pause_id is not None:
-            st.session_state["partner_voice_pauses"] = [
+            voice_pause_items = [
                 item for item in voice_pause_items if str(item["id"]) != remove_pause_id
             ]
-            st.rerun()
+            st.session_state["partner_voice_pauses"] = voice_pause_items
+            st.toast("Pause window removed", icon=":material/delete:")
         st.session_state["partner_voice_pauses"] = voice_pause_items
         voice_pauses_for_export = (
             normalise_voice_pauses(voice_pause_items, float(voiceover_start))
@@ -6706,9 +6814,9 @@ def main() -> None:
 
         with video_canvas_slot.container():
             st.caption(
-                "Preview and arrange the video here. To remove raw footage, drag "
-                "across the original-video bar below the canvas, then choose "
-                "Remove selected area."
+                "Preview and arrange the video here. Use Remove sections or Keep "
+                "sections on the original-video bar below the canvas; multiple kept "
+                "ranges are joined automatically in timeline order."
             )
             template_canvas_result = overlay_layout_editor(
                 images=unified_canvas_images,
@@ -6727,8 +6835,13 @@ def main() -> None:
                 source_duration=float(raw_video_duration),
                 source_cuts=[
                     {"start": float(start), "end": float(end)}
-                    for start, end in source_cuts_for_export
+                    for start, end in source_cuts_selected
                 ],
+                source_keeps=[
+                    {"start": float(start), "end": float(end)}
+                    for start, end in source_keeps_selected
+                ],
+                trim_mode=source_trim_mode,
                 storage_key=(
                     "partner-template-canvas:"
                     f"{st.session_state.get('partner_video_signature', source_path.name)}:"
@@ -6762,7 +6875,21 @@ def main() -> None:
                     ],
                     raw_video_duration,
                 )
+                canvas_keep_ranges = normalise_cut_ranges(
+                    [
+                        item
+                        for item in template_canvas_result.get("source_keeps", [])
+                        if isinstance(item, dict)
+                    ],
+                    raw_video_duration,
+                )
+                canvas_trim_mode = (
+                    "keep"
+                    if template_canvas_result.get("trim_mode") == "keep"
+                    else "remove"
+                )
                 st.session_state["partner_last_canvas_cut_event"] = cut_event
+                st.session_state["partner_source_trim_mode"] = canvas_trim_mode
                 st.session_state["partner_source_cuts"] = [
                     {
                         "id": uuid.uuid4().hex,
@@ -6772,9 +6899,30 @@ def main() -> None:
                     }
                     for start, end in canvas_cut_ranges
                 ]
-                # Rebuild downstream duration and export state from the source
-                # cut immediately after an editor timeline action.
-                st.rerun()
+                st.session_state["partner_source_keeps"] = [
+                    {
+                        "id": uuid.uuid4().hex,
+                        "start": float(start),
+                        "end": float(end),
+                    }
+                    for start, end in canvas_keep_ranges
+                ]
+                source_cuts_selected = canvas_cut_ranges
+                source_keeps_selected = canvas_keep_ranges
+                source_trim_mode = canvas_trim_mode
+                source_cuts_for_export = (
+                    cuts_from_kept_ranges(canvas_keep_ranges, raw_video_duration)
+                    if canvas_trim_mode == "keep" and canvas_keep_ranges
+                    else canvas_cut_ranges
+                    if canvas_trim_mode == "remove"
+                    else []
+                )
+                kept_ranges = kept_source_ranges(
+                    source_cuts_for_export, raw_video_duration
+                )
+                edited_source_duration = sum(
+                    end - start for start, end in kept_ranges
+                )
 
             deletion_event = str(
                 template_canvas_result.get("deletion_event") or ""
@@ -6848,10 +6996,9 @@ def main() -> None:
                     if not str(item.get("id")).startswith("slug:")
                     and str(item.get("id")) not in deleted_template_ids
                 ]
-                # The uploaders were already mounted earlier in this run. A
-                # single explicit rerun remounts them with their incremented
-                # keys, which removes the deleted file chip from the UI.
-                st.rerun()
+                # The component has already hidden the deleted layer locally.
+                # Do not trigger a second full-page rerun here; the next normal
+                # widget interaction remounts the uploader with its new key.
 
             result_items = [
                 item

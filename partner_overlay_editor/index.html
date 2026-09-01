@@ -190,6 +190,13 @@
       position:absolute; top:0; bottom:0; z-index:2; pointer-events:none;
       background:repeating-linear-gradient(135deg,rgba(114,31,43,.78) 0,rgba(114,31,43,.78) 6px,rgba(181,50,65,.78) 6px,rgba(181,50,65,.78) 12px);
     }
+    .source-cut-existing.keep {
+      background:repeating-linear-gradient(135deg,rgba(28,105,70,.82) 0,rgba(28,105,70,.82) 6px,rgba(49,164,107,.82) 6px,rgba(49,164,107,.82) 12px);
+    }
+    .source-trim-modes { display:flex; gap:6px; margin-bottom:8px; }
+    .source-trim-modes button { padding:6px 10px; font-size:10px; }
+    .source-trim-modes button.active { background:#e72b3d; border-color:#ff6473; }
+    .source-trim-modes button.keep.active { background:#207a4d; border-color:#55c78b; }
     .source-cut-selection {
       position:absolute; top:4px; bottom:4px; z-index:5; min-width:4px;
       border:2px solid #ff5968; border-radius:6px; background:rgba(255,75,88,.22);
@@ -352,8 +359,12 @@
     </div>
     <input id="sourceScrubber" class="source-scrubber" type="range" min="0" max="60" value="0" step="0.05" aria-label="Preview playhead">
     <div class="source-cut-editor">
+      <div class="source-trim-modes" role="group" aria-label="Source trim mode">
+        <button id="removeTrimMode" type="button">Remove sections</button>
+        <button id="keepTrimMode" class="keep" type="button">Keep sections</button>
+      </div>
       <div class="source-cut-head">
-        <span class="source-cut-title">Remove a section from the original video</span>
+        <span id="sourceCutTitle" class="source-cut-title">Remove a section from the original video</span>
         <span id="sourceCutValue" class="source-cut-value">0:00.0–0:05.0</span>
       </div>
       <div id="sourceCutTrack" class="source-cut-track" role="slider" aria-label="Select original-video range to remove" tabindex="0">
@@ -428,6 +439,7 @@
     const sourceCutStart = document.getElementById("sourceCutStart");
     const sourceCutEnd = document.getElementById("sourceCutEnd");
     const sourceCutValue = document.getElementById("sourceCutValue");
+    const sourceCutTitle = document.getElementById("sourceCutTitle");
     const sourceCutHelp = document.getElementById("sourceCutHelp");
     const removeSourceSelection = document.getElementById("removeSourceSelection");
     const removedCutHeading = document.getElementById("removedCutHeading");
@@ -447,6 +459,8 @@
     let pendingDeletedIds = [];
     let storageKey = "";
     let sourceCuts = [];
+    let sourceKeeps = [];
+    let trimMode = "remove";
     let sourcePlayhead = 0;
     let sourceCutSelectionStart = 0;
     let sourceCutSelectionEnd = 5;
@@ -520,6 +534,10 @@
       start: Number(cut.start) || 0,
       end: Number(cut.end) || 0
     }));
+    const serialisedKeeps = () => sourceKeeps.map(range => ({
+      start: Number(range.start) || 0,
+      end: Number(range.end) || 0
+    }));
     const readDurableState = () => {
       if (!storageKey) return null;
       try { return JSON.parse(window.localStorage.getItem(storageKey) || "null"); }
@@ -545,6 +563,8 @@
           deleted_ids: allDeletedIds,
           deletion_event: deletionEvent,
           source_cuts: serialisedCuts(),
+          source_keeps: serialisedKeeps(),
+          trim_mode: trimMode,
           cut_event: cutEvent
         },
         dataType: "json"
@@ -804,12 +824,14 @@
       sourceBed.style.left = "0"; sourceBed.style.width = "100%";
       sourceBed.textContent = "Uploaded raw video";
       sourceTrack.appendChild(sourceBed);
-      sourceCuts.forEach(cut => {
+      const displayedTrimRanges = trimMode === "keep" ? sourceKeeps : sourceCuts;
+      displayedTrimRanges.forEach(cut => {
         const removed = document.createElement("div");
         removed.className = "cut-segment";
+        if (trimMode === "keep") removed.style.background = "#31a46b";
         removed.style.left = `${cut.start / sourceLength * 100}%`;
         removed.style.width = `${Math.max(.4, (cut.end - cut.start) / sourceLength * 100)}%`;
-        removed.title = `Removed ${formatTime(cut.start)}–${formatTime(cut.end)}`;
+        removed.title = `${trimMode === "keep" ? "Kept" : "Removed"} ${formatTime(cut.start)}–${formatTime(cut.end)}`;
         sourceTrack.appendChild(removed);
       });
       renderSegments(visualTrack, image => image && image.kind !== "slug" && image.id !== "source", "visual-segment");
@@ -831,9 +853,9 @@
         playhead.style.left = `${clamp(sourcePlayhead / sourceLength, 0, 1) * 100}%`;
         host.appendChild(playhead);
       });
-      markSummary.textContent = sourceCuts.length
-        ? `${sourceCuts.length} removed section${sourceCuts.length === 1 ? "" : "s"} shown in red. Edit or restore it in Removed areas.`
-        : "No sections have been removed from the original video.";
+      markSummary.textContent = displayedTrimRanges.length
+        ? `${displayedTrimRanges.length} ${trimMode === "keep" ? "kept" : "removed"} section${displayedTrimRanges.length === 1 ? "" : "s"} shown on the original-video track.`
+        : `No sections have been ${trimMode === "keep" ? "kept yet" : "removed"}.`;
       // The preview playhead repaints every animation frame. Keep the cut
       // editor stable so its inputs do not flicker or lose focus while video
       // playback is running.
@@ -1100,8 +1122,18 @@
       return sourceDuration() - removed >= .1;
     }
 
+    const activeTrimRanges = () => trimMode === "keep" ? sourceKeeps : sourceCuts;
+    const setActiveTrimRanges = ranges => {
+      if (trimMode === "keep") sourceKeeps = mergeSourceCuts(ranges);
+      else sourceCuts = mergeSourceCuts(ranges);
+    };
+
     function setSourceCutMessage(message = "", isError = false) {
-      sourceCutHelp.textContent = message || "Drag across the bar to select the unwanted part. Timestamps refer to the original uploaded video.";
+      sourceCutHelp.textContent = message || (
+        trimMode === "keep"
+          ? "Drag across the bar to select a section to keep. Multiple kept sections are joined in chronological order."
+          : "Drag across the bar to select the unwanted part. Timestamps refer to the original uploaded video."
+      );
       sourceCutHelp.classList.toggle("source-cut-error", Boolean(isError));
     }
 
@@ -1133,30 +1165,42 @@
       sourceCutSelection.style.left = `${sourceCutSelectionStart / limit * 100}%`;
       sourceCutSelection.style.width = `${Math.max(.4, (sourceCutSelectionEnd - sourceCutSelectionStart) / limit * 100)}%`;
       const candidate = mergeSourceCuts([
-        ...sourceCuts,
+        ...activeTrimRanges(),
         {start: sourceCutSelectionStart, end: sourceCutSelectionEnd}
       ]);
       removeSourceSelection.disabled = (
         sourceCutSelectionEnd - sourceCutSelectionStart < .1 ||
-        !validSourceCuts(candidate)
+        (trimMode === "remove" && !validSourceCuts(candidate))
       );
     }
 
     function renderSourceCutEditor() {
       const limit = sourceDuration();
+      const displayedTrimRanges = activeTrimRanges();
+      const keepMode = trimMode === "keep";
+      document.getElementById("removeTrimMode").classList.toggle("active", !keepMode);
+      document.getElementById("keepTrimMode").classList.toggle("active", keepMode);
+      sourceCutTitle.textContent = keepMode
+        ? "Keep sections from the original video"
+        : "Remove a section from the original video";
+      removeSourceSelection.textContent = keepMode
+        ? "✓ Keep selected area"
+        : "✂ Remove selected area";
+      removedCutHeading.textContent = keepMode ? "KEPT AREAS" : "REMOVED AREAS";
       renderSourceCutSelection();
       sourceCutTrack.querySelectorAll(".source-cut-existing").forEach(node => node.remove());
-      sourceCuts.forEach(cut => {
+      displayedTrimRanges.forEach(cut => {
         const marker = document.createElement("span");
         marker.className = "source-cut-existing";
+        marker.classList.toggle("keep", keepMode);
         marker.style.left = `${cut.start / limit * 100}%`;
         marker.style.width = `${Math.max(.4, (cut.end - cut.start) / limit * 100)}%`;
-        marker.title = `Already removed ${formatTime(cut.start)}–${formatTime(cut.end)}`;
+        marker.title = `${keepMode ? "Kept" : "Already removed"} ${formatTime(cut.start)}–${formatTime(cut.end)}`;
         sourceCutTrack.insertBefore(marker, sourceCutSelection);
       });
-      removedCutHeading.style.display = sourceCuts.length ? "block" : "none";
+      removedCutHeading.style.display = displayedTrimRanges.length ? "block" : "none";
       removedCutList.innerHTML = "";
-      sourceCuts.forEach((cut, index) => {
+      displayedTrimRanges.forEach((cut, index) => {
         const row = document.createElement("div");
         row.className = "removed-cut-row";
         row.innerHTML = `
@@ -1164,7 +1208,7 @@
           <label>FROM<input class="edit-cut-start" type="number" min="0" max="${limit}" step="0.1" value="${cut.start.toFixed(2)}"></label>
           <label>TO<input class="edit-cut-end" type="number" min="0.1" max="${limit}" step="0.1" value="${cut.end.toFixed(2)}"></label>
           <button type="button" class="save-cut">Save</button>
-          <button type="button" class="restore-cut">Restore</button>`;
+          <button type="button" class="restore-cut">${keepMode ? "Remove" : "Restore"}</button>`;
         row.querySelector(".save-cut").onclick = () => {
           const start = Number(row.querySelector(".edit-cut-start").value);
           const end = Number(row.querySelector(".edit-cut-end").value);
@@ -1172,19 +1216,19 @@
             setSourceCutMessage("The end of a removed area must be at least 0.1 seconds after its start.", true);
             return;
           }
-          const updated = sourceCuts.map((item, itemIndex) => itemIndex === index ? {start, end} : item);
-          if (!validSourceCuts(updated)) {
+          const updated = displayedTrimRanges.map((item, itemIndex) => itemIndex === index ? {start, end} : item);
+          if (!keepMode && !validSourceCuts(updated)) {
             setSourceCutMessage("That edit would remove the complete original video. Leave at least 0.1 seconds.", true);
             return;
           }
-          sourceCuts = mergeSourceCuts(updated);
-          setSourceCutMessage("Removed area updated.");
+          setActiveTrimRanges(updated);
+          setSourceCutMessage(`${keepMode ? "Kept" : "Removed"} area updated.`);
           renderSequence();
           commit([], "", sourceCutEvent("edit"));
         };
         row.querySelector(".restore-cut").onclick = () => {
-          sourceCuts = sourceCuts.filter((_, itemIndex) => itemIndex !== index);
-          setSourceCutMessage("Section restored to the original video.");
+          setActiveTrimRanges(displayedTrimRanges.filter((_, itemIndex) => itemIndex !== index));
+          setSourceCutMessage(keepMode ? "Kept section removed from the list." : "Section restored to the original video.");
           renderSequence();
           commit([], "", sourceCutEvent("restore"));
         };
@@ -1237,17 +1281,33 @@
     ));
     removeSourceSelection.addEventListener("click", () => {
       const candidate = mergeSourceCuts([
-        ...sourceCuts,
+        ...activeTrimRanges(),
         {start: sourceCutSelectionStart, end: sourceCutSelectionEnd}
       ]);
-      if (!validSourceCuts(candidate)) {
+      if (trimMode === "remove" && !validSourceCuts(candidate)) {
         setSourceCutMessage("That selection would remove the complete original video. Leave at least 0.1 seconds.", true);
         return;
       }
-      sourceCuts = candidate;
-      setSourceCutMessage("Selected area removed from the original video.");
+      setActiveTrimRanges(candidate);
+      setSourceCutMessage(
+        trimMode === "keep"
+          ? "Selected area added to the kept sequence."
+          : "Selected area removed from the original video."
+      );
       renderSequence();
       commit([], "", sourceCutEvent("add"));
+    });
+    document.getElementById("removeTrimMode").addEventListener("click", () => {
+      trimMode = "remove";
+      setSourceCutMessage();
+      renderSequence();
+      commit([], "", sourceCutEvent("mode"));
+    });
+    document.getElementById("keepTrimMode").addEventListener("click", () => {
+      trimMode = "keep";
+      setSourceCutMessage();
+      renderSequence();
+      commit([], "", sourceCutEvent("mode"));
     });
 
     window.addEventListener("message", event => {
@@ -1279,6 +1339,9 @@
       args=nextArgs;
       const incomingCuts = Array.isArray(args.source_cuts) ? args.source_cuts : [];
       sourceCuts = mergeSourceCuts(incomingCuts);
+      const incomingKeeps = Array.isArray(args.source_keeps) ? args.source_keeps : [];
+      sourceKeeps = mergeSourceCuts(incomingKeeps);
+      trimMode = args.trim_mode === "keep" ? "keep" : "remove";
       sourcePlayhead = clamp(sourcePlayhead, 0, sourceDuration());
       const nextVoiceoverSource = String(args.voiceover_src || "");
       if (nextVoiceoverSource !== voiceoverSource) {

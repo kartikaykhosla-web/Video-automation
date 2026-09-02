@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.02.5"
+APP_BUILD_ID = "Editor-2026.09.02.6"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -5687,6 +5687,7 @@ def main() -> None:
         if "partner_source_keeps" not in st.session_state:
             st.session_state["partner_source_keeps"] = []
         st.session_state.setdefault("partner_source_trim_mode", "remove")
+        st.session_state.setdefault("partner_source_trim_revision", 0)
         source_cut_items: List[Dict[str, object]] = st.session_state[
             "partner_source_cuts"
         ]
@@ -6843,6 +6844,9 @@ def main() -> None:
                     for start, end in source_keeps_selected
                 ],
                 trim_mode=source_trim_mode,
+                trim_revision=int(
+                    st.session_state.get("partner_source_trim_revision", 0)
+                ),
                 storage_key=(
                     "partner-template-canvas:"
                     f"{st.session_state.get('partner_video_signature', source_path.name)}:"
@@ -6867,29 +6871,58 @@ def main() -> None:
                 and cut_event
                 != st.session_state.get("partner_last_canvas_cut_event")
             )
-            if is_new_cut_event:
-                canvas_cut_ranges = normalise_cut_ranges(
-                    [
-                        item
-                        for item in template_canvas_result.get("source_cuts", [])
-                        if isinstance(item, dict)
-                    ],
-                    raw_video_duration,
+            canvas_cut_ranges = normalise_cut_ranges(
+                [
+                    item
+                    for item in template_canvas_result.get("source_cuts", [])
+                    if isinstance(item, dict)
+                ],
+                raw_video_duration,
+            )
+            canvas_keep_ranges = normalise_cut_ranges(
+                [
+                    item
+                    for item in template_canvas_result.get("source_keeps", [])
+                    if isinstance(item, dict)
+                ],
+                raw_video_duration,
+            )
+            canvas_trim_mode = (
+                "keep"
+                if template_canvas_result.get("trim_mode") == "keep"
+                else "remove"
+            )
+            incoming_trim_revision = int(
+                template_canvas_result.get("trim_revision") or 0
+            )
+            stored_trim_revision = int(
+                st.session_state.get("partner_source_trim_revision", 0)
+            )
+            is_newer_trim_revision = incoming_trim_revision > stored_trim_revision
+            has_trim_payload = any(
+                key in template_canvas_result
+                for key in ("source_cuts", "source_keeps", "trim_mode")
+            )
+            legacy_trim_payload_changed = (
+                has_trim_payload
+                and incoming_trim_revision == 0
+                and stored_trim_revision == 0
+                and (
+                    canvas_cut_ranges != source_cuts_selected
+                    or canvas_keep_ranges != source_keeps_selected
+                    or canvas_trim_mode != source_trim_mode
                 )
-                canvas_keep_ranges = normalise_cut_ranges(
-                    [
-                        item
-                        for item in template_canvas_result.get("source_keeps", [])
-                        if isinstance(item, dict)
-                    ],
-                    raw_video_duration,
-                )
-                canvas_trim_mode = (
-                    "keep"
-                    if template_canvas_result.get("trim_mode") == "keep"
-                    else "remove"
-                )
+            )
+            if (
+                is_new_cut_event
+                or is_newer_trim_revision
+                or legacy_trim_payload_changed
+            ):
                 st.session_state["partner_last_canvas_cut_event"] = cut_event
+                st.session_state["partner_source_trim_revision"] = max(
+                    incoming_trim_revision,
+                    stored_trim_revision,
+                )
                 st.session_state["partner_source_trim_mode"] = canvas_trim_mode
                 st.session_state["partner_source_cuts"] = [
                     {

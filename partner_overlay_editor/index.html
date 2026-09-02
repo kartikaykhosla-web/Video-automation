@@ -463,6 +463,8 @@
     let sourceCuts = [];
     let sourceKeeps = [];
     let trimMode = "remove";
+    let trimRevision = 0;
+    let pendingTrimSyncSignature = "";
     let sourcePlayhead = 0;
     let sourceCutSelectionStart = 0;
     let sourceCutSelectionEnd = 5;
@@ -542,6 +544,11 @@
       start: Number(range.start) || 0,
       end: Number(range.end) || 0
     }));
+    const trimSignature = (cuts, keeps, mode) => JSON.stringify({
+      cuts: serialisedCuts(cuts),
+      keeps: serialisedKeeps(keeps),
+      mode: mode === "keep" ? "keep" : "remove"
+    });
     const readDurableState = () => {
       if (!storageKey) return null;
       try { return JSON.parse(window.localStorage.getItem(storageKey) || "null"); }
@@ -552,7 +559,8 @@
       items = layout,
       cuts = sourceCuts,
       keeps = sourceKeeps,
-      mode = trimMode
+      mode = trimMode,
+      revision = trimRevision
     ) => {
       if (!storageKey) return;
       try {
@@ -561,11 +569,13 @@
           deleted_ids: [...new Set(deletedIds.map(String))],
           source_cuts: serialisedCuts(cuts),
           source_keeps: serialisedKeeps(keeps),
-          trim_mode: mode
+          trim_mode: mode,
+          trim_revision: Math.max(0, Number(revision) || 0)
         }));
       } catch (_) {}
     };
     const commit = (deletedIds = [], deletionEvent = "", cutEvent = "") => {
+      if (cutEvent) trimRevision = Math.max(Date.now(), trimRevision + 1);
       const allDeletedIds = [...new Set([...pendingDeletedIds, ...deletedIds].map(String))];
       const items = serialisedLayout();
       writeDurableState(allDeletedIds, items);
@@ -578,6 +588,7 @@
           source_cuts: serialisedCuts(),
           source_keeps: serialisedKeeps(),
           trim_mode: trimMode,
+          trim_revision: trimRevision,
           cut_event: cutEvent
         },
         dataType: "json"
@@ -684,7 +695,14 @@
       return {asset: playlist[0], index: 0, localTime: 0};
     }
 
-    function applyTileMedia(tile, image, elapsed = 0, shouldPlay = false, directTime = false) {
+    function applyTileMedia(
+      tile,
+      image,
+      elapsed = 0,
+      shouldPlay = false,
+      directTime = false,
+      directRangeIndex = null
+    ) {
       // Raw-source timestamps have already been mapped from the edited
       // sequence, so they must not pass through playlist modulo arithmetic.
       const frame = directTime
@@ -719,13 +737,19 @@
           frame.localTime,
           Math.max(0, (video.duration || frame.localTime) - .03)
         );
+        const rangeChanged = (
+          directTime &&
+          directRangeIndex !== null &&
+          video.dataset.sourceRangeIndex !== String(directRangeIndex)
+        );
         if (
           video.readyState >= 1 &&
-          Math.abs((video.currentTime || 0) - targetTime) > .35 &&
+          (rangeChanged || Math.abs((video.currentTime || 0) - targetTime) > .35) &&
           (!directTime || video.dataset.trimSeekPending !== "1")
         ) {
           try {
             if (directTime) {
+              video.dataset.sourceRangeIndex = String(directRangeIndex ?? 0);
               video.dataset.trimSeekPending = "1";
               video.dataset.resumeAfterTrimSeek = shouldPlay ? "1" : "0";
               if (previewing && sourceSeekStartedAt === null) {
@@ -812,12 +836,22 @@
         video.addEventListener("pause", () => { playButton.textContent = "▶"; });
         video.addEventListener("ended", () => { playButton.textContent = "▶"; });
         const isSource = String(item.id) === "source";
-        const stageElapsed = previewing && isSource
-          ? editedTimeToSourceTime(Math.max(0, previewTime - item.start))
+        const sourcePosition = previewing && isSource
+          ? editedTimeToSourcePosition(Math.max(0, previewTime - item.start))
+          : null;
+        const stageElapsed = sourcePosition
+          ? sourcePosition.time
           : previewing
           ? Math.max(0, previewTime - item.start)
           : 0;
-        applyTileMedia(tile, image, stageElapsed, false, isSource && previewing);
+        applyTileMedia(
+          tile,
+          image,
+          stageElapsed,
+          false,
+          isSource && previewing,
+          sourcePosition?.rangeIndex ?? null
+        );
         tile.addEventListener("pointerdown", event => beginSpatial(event, item, event.target.dataset.resize || "move"));
         stage.appendChild(tile);
       });
@@ -944,10 +978,18 @@
         tile.style.display = visible ? "block" : "none";
         const video = tile.querySelector("video.tile-video");
         if (!visible) { if (video) video.pause(); return; }
-        const elapsed = isSource
-          ? editedTimeToSourceTime(sourceElapsed)
-          : sourceElapsed;
-        applyTileMedia(tile, imageFor(item.id), elapsed, true, isSource);
+        const sourcePosition = isSource
+          ? editedTimeToSourcePosition(sourceElapsed)
+          : null;
+        const elapsed = sourcePosition ? sourcePosition.time : sourceElapsed;
+        applyTileMedia(
+          tile,
+          imageFor(item.id),
+          elapsed,
+          true,
+          isSource,
+          sourcePosition?.rangeIndex ?? null
+        );
       });
       if (voiceoverSource) {
         const voiceStart = Math.max(0, Number(args.voiceover_start) || 0);
@@ -1224,22 +1266,33 @@
       return Math.max(.1, editedSourceDuration() + nonSourceTail);
     }
 
-    function editedTimeToSourceTime(editedTime) {
+    function editedTimeToSourcePosition(editedTime) {
       const ranges = sourcePlaybackRanges();
-      if (!ranges.length) return 0;
+      if (!ranges.length) return {time: 0, rangeIndex: 0};
       let remaining = Math.max(0, Number(editedTime) || 0);
-      for (const range of ranges) {
+      for (let rangeIndex = 0; rangeIndex < ranges.length; rangeIndex += 1) {
+        const range = ranges[rangeIndex];
         const duration = Math.max(0, range.end - range.start);
         if (remaining < duration || range === ranges[ranges.length - 1]) {
-          return clamp(
-            range.start + Math.min(remaining, Math.max(0, duration - .03)),
-            0,
-            sourceDuration()
-          );
+          return {
+            time: clamp(
+              range.start + Math.min(remaining, Math.max(0, duration - .03)),
+              0,
+              sourceDuration()
+            ),
+            rangeIndex
+          };
         }
         remaining -= duration;
       }
-      return Math.max(0, ranges[ranges.length - 1].end - .03);
+      return {
+        time: Math.max(0, ranges[ranges.length - 1].end - .03),
+        rangeIndex: ranges.length - 1
+      };
+    }
+
+    function editedTimeToSourceTime(editedTime) {
+      return editedTimeToSourcePosition(editedTime).time;
     }
 
     function sourceCutEvent(action) {
@@ -1512,7 +1565,8 @@
           durableState.items||[],
           durableState.source_cuts||[],
           durableState.source_keeps||[],
-          durableState.trim_mode||"remove"
+          durableState.trim_mode||"remove",
+          durableState.trim_revision||0
         );
       }
       const nextArgs={
@@ -1547,6 +1601,34 @@
         durableState?.trim_mode === "keep" ||
         (!durableState?.trim_mode && args.trim_mode === "keep")
       ) ? "keep" : "remove";
+      trimRevision = Math.max(
+        trimRevision,
+        Number(durableState?.trim_revision) || 0,
+        Number(args.trim_revision) || 0
+      );
+      const incomingTrimSignature = trimSignature(
+        mergeSourceCuts(incomingCuts),
+        mergeSourceCuts(incomingKeeps),
+        args.trim_mode
+      );
+      const localTrimSignature = trimSignature(
+        sourceCuts,
+        sourceKeeps,
+        trimMode
+      );
+      if (
+        (hasDurableCuts || hasDurableKeeps) &&
+        localTrimSignature !== incomingTrimSignature &&
+        pendingTrimSyncSignature !== localTrimSignature
+      ) {
+        pendingTrimSyncSignature = localTrimSignature;
+        setTimeout(() => {
+          if (trimSignature(sourceCuts, sourceKeeps, trimMode) !== localTrimSignature) return;
+          commit([], "", sourceCutEvent("sync"));
+        }, 0);
+      } else if (localTrimSignature === incomingTrimSignature) {
+        pendingTrimSyncSignature = "";
+      }
       sourcePlayhead = clamp(sourcePlayhead, 0, sourceDuration());
       const nextVoiceoverSource = String(args.voiceover_src || "");
       if (nextVoiceoverSource !== voiceoverSource) {

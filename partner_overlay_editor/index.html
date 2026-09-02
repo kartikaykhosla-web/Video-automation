@@ -48,9 +48,9 @@
     .tile:active { cursor: grabbing; }
     .tile.selected { border-color: #ff4b4b; box-shadow: 0 0 0 2px rgba(255,75,75,.3); }
     .tile.text-only-slug { background: transparent; box-shadow: none; }
-    .tile.text-only-slug .blur { display: none; }
-    .blur { position: absolute; inset: -10%; width: 120%; height: 120%; object-fit: cover; filter: blur(18px) brightness(.68); }
-    .sharp { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    .blur { display: none; }
+    .sharp { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .tile.contain-media .sharp { object-fit: contain; }
     .tile-video { background: transparent; pointer-events: none; }
     .tile-play {
       position: absolute; left: 50%; top: 50%; z-index: 8; width: 42px; height: 42px;
@@ -763,14 +763,17 @@
           directRangeIndex !== null &&
           video.dataset.sourceRangeIndex !== String(directRangeIndex)
         );
+        const needsSeek = Math.abs((video.currentTime || 0) - targetTime) > .12;
+        if (rangeChanged) {
+          video.dataset.sourceRangeIndex = String(directRangeIndex ?? 0);
+        }
         if (
           video.readyState >= 1 &&
-          (rangeChanged || Math.abs((video.currentTime || 0) - targetTime) > .35) &&
+          needsSeek &&
           (!directTime || video.dataset.trimSeekPending !== "1")
         ) {
           try {
             if (directTime) {
-              video.dataset.sourceRangeIndex = String(directRangeIndex ?? 0);
               video.dataset.trimSeekPending = "1";
               video.dataset.resumeAfterTrimSeek = shouldPlay ? "1" : "0";
               if (previewing && sourceSeekStartedAt === null) {
@@ -820,7 +823,7 @@
       [...visible].sort((a,b) => a.z - b.z).forEach(item => {
         const image = imageFor(item.id); if (!image) return;
         const tile = document.createElement("div");
-        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}`;
+        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${image.fit_mode === "contain_transparent" ? " contain-media" : ""}`;
         tile.dataset.id = String(item.id);
         Object.assign(tile.style, {left:`${item.x*100}%`, top:`${item.y*100}%`, width:`${item.w*100}%`, height:`${item.h*100}%`, zIndex:item.z});
         tile.innerHTML = `<img class="blur" draggable="false"><img class="sharp tile-image" draggable="false"><video class="sharp tile-video" muted playsinline preload="metadata"></video><button type="button" class="tile-play" title="Play video preview" aria-label="Play video preview">▶</button><span class="tile-name"></span><span class="media-kind"></span><span class="resize n" data-resize="n"></span><span class="resize ne" data-resize="ne"></span><span class="resize e" data-resize="e"></span><span class="resize se" data-resize="se"></span><span class="resize s" data-resize="s"></span><span class="resize sw" data-resize="sw"></span><span class="resize w" data-resize="w"></span><span class="resize nw" data-resize="nw"></span>`;
@@ -1072,6 +1075,10 @@
 
     function startCompositionPreview() {
       if (previewing) { stopCompositionPreview(); return; }
+      if (editedPlayhead >= compositionPreviewDuration() - .05) {
+        editedPlayhead = 0;
+        sourcePlayhead = editedTimeToSourceTime(0);
+      }
       previewing = true;
       previewTime = clamp(editedPlayhead, 0, compositionPreviewDuration());
       sourceSeekStartedAt = null;
@@ -1079,6 +1086,8 @@
       document.body.classList.add("previewing");
       document.getElementById("previewComposition").textContent = "■ Stop preview";
       renderStage();
+      const sourceVideo = stage.querySelector('.tile[data-id="source"] video.tile-video');
+      if (sourceVideo) sourceVideo.play().catch(() => {});
       previewFrame = requestAnimationFrame(updateCompositionFrame);
     }
 

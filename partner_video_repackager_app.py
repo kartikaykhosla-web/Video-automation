@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.02.8"
+APP_BUILD_ID = "Editor-2026.09.02.9"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -872,9 +872,12 @@ def video_preview_data_url(path_value: str, modified_ns: int) -> str:
         with av.open(path_value) as container:
             frame = next(container.decode(video=0))
             still = frame.to_image().convert("RGB")
-        canvas = Image.new("RGB", (960, 540), "black")
-        fitted = ImageOps.contain(still, canvas.size, Image.Resampling.LANCZOS)
-        canvas.paste(fitted, ((960 - fitted.width) // 2, (540 - fitted.height) // 2))
+        canvas = ImageOps.fit(
+            still,
+            (960, 540),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
         buffer = BytesIO()
         canvas.save(buffer, format="JPEG", quality=72, optimize=True)
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -892,7 +895,7 @@ def canvas_video_data_url(path_value: str, modified_ns: int) -> str:
         return ""
     source = Path(path_value)
     digest = hashlib.sha256(
-        f"canvas-preview-v2-audio:{source}:{modified_ns}".encode("utf-8")
+        f"canvas-preview-v3-cover-audio:{source}:{modified_ns}".encode("utf-8")
     ).hexdigest()[:16]
     proxy = PREVIEW_DIR / f"{source.stem}_canvas_{digest}.mp4"
     if not proxy.exists() or proxy.stat().st_size <= 1024:
@@ -903,8 +906,8 @@ def canvas_video_data_url(path_value: str, modified_ns: int) -> str:
                 "-i",
                 str(source),
                 "-vf",
-                "scale=640:360:force_original_aspect_ratio=decrease,"
-                "pad=640:360:(ow-iw)/2:(oh-ih)/2:black,fps=15",
+                "scale=640:360:force_original_aspect_ratio=increase,"
+                "crop=640:360,fps=15",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -2588,7 +2591,7 @@ def _overlay_font(text: str, size: int, font_name: str = ""):
 
 def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
     """Create a transparent 1920x1080 layer for one uploaded still image."""
-    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+    from PIL import Image, ImageOps
 
     ensure_dirs()
     image_path = Path(str(item["path"]))
@@ -2600,7 +2603,7 @@ def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
         f"{float(item.get(key) or 0):.5f}" for key in ("x", "y", "w", "h")
     ) if custom_layout else "legacy"
     cache_payload = (
-        f"visual-editor-v1:{image_path}:{image_path.stat().st_mtime_ns}:"
+        f"visual-editor-v2-cover:{image_path}:{image_path.stat().st_mtime_ns}:"
         f"{placement}:{width_percent}:{layout_values}:{fit_mode}"
     )
     digest = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:16]
@@ -2618,42 +2621,38 @@ def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
             box_height = max(80, int(clamp_float(float(item.get("h") or 0.45), 0.08, 1.0) * OUTPUT_HEIGHT))
             box_width = min(box_width, OUTPUT_WIDTH - x)
             box_height = min(box_height, OUTPUT_HEIGHT - y)
-            tile = Image.new(
-                "RGBA",
-                (box_width, box_height),
-                (0, 0, 0, 0 if fit_mode == "contain_transparent" else 255),
-            )
-            if fit_mode != "contain_transparent":
-                background = ImageOps.fit(
-                    still.convert("RGB"),
+            if fit_mode == "contain_transparent":
+                tile = Image.new("RGBA", (box_width, box_height), (0, 0, 0, 0))
+                fitted = ImageOps.contain(
+                    still,
+                    (box_width, box_height),
+                    Image.Resampling.LANCZOS,
+                )
+                tile.alpha_composite(
+                    fitted,
+                    (
+                        (box_width - fitted.width) // 2,
+                        (box_height - fitted.height) // 2,
+                    ),
+                )
+            else:
+                # Editor media uses a true cover crop. This fills the selected
+                # box without inventing blurred bands above or below the asset.
+                tile = ImageOps.fit(
+                    still,
                     (box_width, box_height),
                     method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
                 )
-                blur_radius = max(10, int(min(box_width, box_height) * 0.035))
-                background = background.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-                background = ImageEnhance.Brightness(background).enhance(0.70).convert("RGBA")
-                tile.alpha_composite(background)
-            fitted = ImageOps.contain(still, (box_width, box_height), Image.Resampling.LANCZOS)
-            tile.alpha_composite(
-                fitted,
-                ((box_width - fitted.width) // 2, (box_height - fitted.height) // 2),
-            )
             canvas.alpha_composite(tile, (x, y))
         elif placement == "Full frame":
-            # Fill the full 16:9 canvas with a softened version of the image so
-            # portrait/square images never reveal the underlying source video.
-            background = ImageOps.fit(
-                still.convert("RGB"),
+            fitted = ImageOps.fit(
+                still,
                 (OUTPUT_WIDTH, OUTPUT_HEIGHT),
                 method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
             )
-            background = background.filter(ImageFilter.GaussianBlur(radius=34))
-            background = ImageEnhance.Brightness(background).enhance(0.72).convert("RGBA")
-            canvas.alpha_composite(background)
-            fitted = ImageOps.contain(still, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
-            x = (OUTPUT_WIDTH - fitted.width) // 2
-            y = (OUTPUT_HEIGHT - fitted.height) // 2
-            canvas.alpha_composite(fitted, (x, y))
+            canvas.alpha_composite(fitted, (0, 0))
         else:
             target_width = max(240, int(OUTPUT_WIDTH * width_percent / 100))
             target_height = min(OUTPUT_HEIGHT - 120, int(target_width * still.height / max(still.width, 1)))
@@ -3550,33 +3549,14 @@ def export_horizontal_video(
             # H.264 works most reliably with even frame dimensions.
             box_width = max(80, box_width - box_width % 2)
             box_height = max(80, box_height - box_height % 2)
-            filter_parts.extend(
-                [
-                    (
-                        f"[{overlay_input}:v]"
-                        f"trim=start={trim_start:.3f}:duration={duration:.3f},"
-                        "setpts=PTS-STARTPTS,split=2"
-                        f"[bytebg{overlay_number}][bytefg{overlay_number}]"
-                    ),
-                    (
-                        f"[bytebg{overlay_number}]"
-                        f"scale={box_width}:{box_height}:"
-                        "force_original_aspect_ratio=increase,"
-                        f"crop={box_width}:{box_height},boxblur=20:2"
-                        f"[bytebgfit{overlay_number}]"
-                    ),
-                    (
-                        f"[bytefg{overlay_number}]"
-                        f"scale={box_width}:{box_height}:"
-                        "force_original_aspect_ratio=decrease"
-                        f"[bytefgfit{overlay_number}]"
-                    ),
-                    (
-                        f"[bytebgfit{overlay_number}][bytefgfit{overlay_number}]"
-                        "overlay=(W-w)/2:(H-h)/2:shortest=1,"
-                        f"setpts=PTS+{start:.3f}/TB[bytev{overlay_number}]"
-                    ),
-                ]
+            filter_parts.append(
+                f"[{overlay_input}:v]"
+                f"trim=start={trim_start:.3f}:duration={duration:.3f},"
+                "setpts=PTS-STARTPTS,"
+                f"scale={box_width}:{box_height}:"
+                "force_original_aspect_ratio=increase,"
+                f"crop={box_width}:{box_height},"
+                f"setpts=PTS+{start:.3f}/TB[bytev{overlay_number}]"
             )
             overlay_source = f"bytev{overlay_number}"
             overlay_position = f"{x}:{y}"
@@ -5961,7 +5941,7 @@ def main() -> None:
             )
         if selected_logo_path and "logo" not in hidden_template_components:
             canvas_images.append(
-                {"id": "logo", "name": f"{selected_property} logo", "kind": "image", "deletable": True, "src": image_preview_data_url(str(selected_logo_path), selected_logo_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration}
+                {"id": "logo", "name": f"{selected_property} logo", "kind": "image", "fit_mode": "contain_transparent", "deletable": True, "src": image_preview_data_url(str(selected_logo_path), selected_logo_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration}
             )
         # The canvas is populated after the slug controls have been read so that
         # raw footage, floating media, logos and every slug share one editor.

@@ -533,11 +533,11 @@
       ({id,x,y,w,h,z,start,duration,locked}) =>
         ({id,x,y,w,h,z,start,duration,locked:Boolean(locked)})
     );
-    const serialisedCuts = () => sourceCuts.map(cut => ({
+    const serialisedCuts = (cuts = sourceCuts) => cuts.map(cut => ({
       start: Number(cut.start) || 0,
       end: Number(cut.end) || 0
     }));
-    const serialisedKeeps = () => sourceKeeps.map(range => ({
+    const serialisedKeeps = (keeps = sourceKeeps) => keeps.map(range => ({
       start: Number(range.start) || 0,
       end: Number(range.end) || 0
     }));
@@ -546,12 +546,21 @@
       try { return JSON.parse(window.localStorage.getItem(storageKey) || "null"); }
       catch (_) { return null; }
     };
-    const writeDurableState = (deletedIds = [], items = layout) => {
+    const writeDurableState = (
+      deletedIds = [],
+      items = layout,
+      cuts = sourceCuts,
+      keeps = sourceKeeps,
+      mode = trimMode
+    ) => {
       if (!storageKey) return;
       try {
         window.localStorage.setItem(storageKey, JSON.stringify({
           items: serialisedLayout(items),
-          deleted_ids: [...new Set(deletedIds.map(String))]
+          deleted_ids: [...new Set(deletedIds.map(String))],
+          source_cuts: serialisedCuts(cuts),
+          source_keeps: serialisedKeeps(keeps),
+          trim_mode: mode
         }));
       } catch (_) {}
     };
@@ -674,8 +683,12 @@
       return {asset: playlist[0], index: 0, localTime: 0};
     }
 
-    function applyTileMedia(tile, image, elapsed = 0, shouldPlay = false) {
-      const frame = playlistFrame(image, elapsed);
+    function applyTileMedia(tile, image, elapsed = 0, shouldPlay = false, directTime = false) {
+      // Raw-source timestamps have already been mapped from the edited
+      // sequence, so they must not pass through playlist modulo arithmetic.
+      const frame = directTime
+        ? {asset: image || {}, index: 0, localTime: Math.max(0, elapsed)}
+        : playlistFrame(image, elapsed);
       const asset = frame.asset || image || {};
       const kind = String(asset.kind || image?.kind || "image");
       const blur = tile.querySelector(".blur");
@@ -695,7 +708,9 @@
           video.poster = source;
           video.load();
         }
-        video.loop = !Array.isArray(image?.playlist) || image.playlist.length <= 1;
+        video.loop = directTime
+          ? false
+          : !Array.isArray(image?.playlist) || image.playlist.length <= 1;
         const previewVolume = clamp(Number(asset.preview_volume ?? image?.preview_volume) || 0, 0, 1);
         video.volume = previewVolume;
         video.muted = previewVolume <= 0;
@@ -745,6 +760,10 @@
         playButton.addEventListener("pointerdown", event => event.stopPropagation());
         playButton.addEventListener("click", async event => {
           event.preventDefault(); event.stopPropagation();
+          if (String(item.id) === "source") {
+            startCompositionPreview();
+            return;
+          }
           if (video.paused) {
             stage.querySelectorAll("video.tile-video").forEach(other => {
               if (other !== video) other.pause();
@@ -873,12 +892,20 @@
       stage.querySelectorAll(".tile").forEach(tile => {
         const item = layout.find(value => String(value.id) === String(tile.dataset.id));
         if (!item) return;
-        const visible = previewTime >= item.start && previewTime < item.start + item.duration;
+        const isSource = String(item.id) === "source";
+        const sourceElapsed = Math.max(0, previewTime - item.start);
+        const visible = (
+          previewTime >= item.start &&
+          previewTime < item.start + item.duration &&
+          (!isSource || sourceElapsed < editedSourceDuration() - .001)
+        );
         tile.style.display = visible ? "block" : "none";
         const video = tile.querySelector("video.tile-video");
         if (!visible) { if (video) video.pause(); return; }
-        const elapsed = Math.max(0, previewTime - item.start);
-        applyTileMedia(tile, imageFor(item.id), elapsed, true);
+        const elapsed = isSource
+          ? editedTimeToSourceTime(sourceElapsed)
+          : sourceElapsed;
+        applyTileMedia(tile, imageFor(item.id), elapsed, true, isSource);
       });
       if (voiceoverSource) {
         const voiceStart = Math.max(0, Number(args.voiceover_start) || 0);
@@ -915,7 +942,9 @@
         }
       }
       previewMeta.textContent = `Preview ${formatTime(previewTime)} / ${formatTime(videoDuration())}`;
-      sourcePlayhead = Math.min(sourceDuration(), previewTime);
+      sourcePlayhead = editedTimeToSourceTime(
+        Math.min(previewTime, editedSourceDuration())
+      );
       renderSequence();
       if (previewTime >= videoDuration() - .01) {
         stopCompositionPreview();
@@ -1114,6 +1143,49 @@
       }, []);
     }
 
+    function sourcePlaybackRanges() {
+      const limit = sourceDuration();
+      if (trimMode === "keep" && sourceKeeps.length) {
+        return mergeSourceCuts(sourceKeeps);
+      }
+      if (trimMode === "keep") return [{start: 0, end: limit}];
+      const cuts = mergeSourceCuts(sourceCuts);
+      if (!cuts.length) return [{start: 0, end: limit}];
+      const ranges = [];
+      let cursor = 0;
+      cuts.forEach(cut => {
+        if (cut.start > cursor + .001) ranges.push({start: cursor, end: cut.start});
+        cursor = Math.max(cursor, cut.end);
+      });
+      if (cursor < limit - .001) ranges.push({start: cursor, end: limit});
+      return ranges;
+    }
+
+    function editedSourceDuration() {
+      return sourcePlaybackRanges().reduce(
+        (total, range) => total + Math.max(0, range.end - range.start),
+        0
+      );
+    }
+
+    function editedTimeToSourceTime(editedTime) {
+      const ranges = sourcePlaybackRanges();
+      if (!ranges.length) return 0;
+      let remaining = Math.max(0, Number(editedTime) || 0);
+      for (const range of ranges) {
+        const duration = Math.max(0, range.end - range.start);
+        if (remaining < duration || range === ranges[ranges.length - 1]) {
+          return clamp(
+            range.start + Math.min(remaining, Math.max(0, duration - .03)),
+            0,
+            sourceDuration()
+          );
+        }
+        remaining -= duration;
+      }
+      return Math.max(0, ranges[ranges.length - 1].end - .03);
+    }
+
     function sourceCutEvent(action) {
       return `${Date.now()}:${action}:${Math.random()}`;
     }
@@ -1238,6 +1310,7 @@
         removedCutList.appendChild(row);
       });
       setHeight();
+      requestAnimationFrame(() => requestAnimationFrame(setHeight));
     }
 
     function sourceCutTimeFromPointer(event) {
@@ -1378,7 +1451,13 @@
       pendingDeletedIds=[...new Set([...pendingDeletedIds, ...durableDeletedIds])]
         .filter(id=>rawImageIds.has(id));
       if(durableState && durableDeletedIds.length!==pendingDeletedIds.length) {
-        writeDurableState(pendingDeletedIds, durableState.items||[]);
+        writeDurableState(
+          pendingDeletedIds,
+          durableState.items||[],
+          durableState.source_cuts||[],
+          durableState.source_keeps||[],
+          durableState.trim_mode||"remove"
+        );
       }
       const nextArgs={
         ...rawNextArgs,
@@ -1390,11 +1469,28 @@
       // byte size—must control layout resets so freehand geometry is preserved.
       const nextSignature=(nextArgs.images||[]).map(image=>`${image.id}:${image.kind||"image"}`).join("|");
       args=nextArgs;
+      const hasDurableCuts = Object.prototype.hasOwnProperty.call(
+        durableState || {}, "source_cuts"
+      );
+      const hasDurableKeeps = Object.prototype.hasOwnProperty.call(
+        durableState || {}, "source_keeps"
+      );
       const incomingCuts = Array.isArray(args.source_cuts) ? args.source_cuts : [];
-      sourceCuts = mergeSourceCuts(incomingCuts);
+      sourceCuts = mergeSourceCuts(
+        hasDurableCuts && Array.isArray(durableState.source_cuts)
+          ? durableState.source_cuts
+          : incomingCuts
+      );
       const incomingKeeps = Array.isArray(args.source_keeps) ? args.source_keeps : [];
-      sourceKeeps = mergeSourceCuts(incomingKeeps);
-      trimMode = args.trim_mode === "keep" ? "keep" : "remove";
+      sourceKeeps = mergeSourceCuts(
+        hasDurableKeeps && Array.isArray(durableState.source_keeps)
+          ? durableState.source_keeps
+          : incomingKeeps
+      );
+      trimMode = (
+        durableState?.trim_mode === "keep" ||
+        (!durableState?.trim_mode && args.trim_mode === "keep")
+      ) ? "keep" : "remove";
       sourcePlayhead = clamp(sourcePlayhead, 0, sourceDuration());
       const nextVoiceoverSource = String(args.voiceover_src || "");
       if (nextVoiceoverSource !== voiceoverSource) {

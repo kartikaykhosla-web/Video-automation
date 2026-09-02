@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.02.4"
+APP_BUILD_ID = "Editor-2026.09.02.5"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -6833,6 +6833,7 @@ def main() -> None:
                 ],
                 voiceover_volume=1.0,
                 source_duration=float(raw_video_duration),
+                edited_source_duration=float(edited_source_duration),
                 source_cuts=[
                     {"start": float(start), "end": float(end)}
                     for start, end in source_cuts_selected

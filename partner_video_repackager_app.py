@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.02.7"
+APP_BUILD_ID = "Editor-2026.09.02.8"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -2922,7 +2922,7 @@ def build_source_cut_cache(
     source: Path,
     cuts: List[Tuple[float, float]],
 ) -> Tuple[Optional[Path], str]:
-    """Create or reuse an accurately cut, video-only source for final rendering."""
+    """Create or reuse an accurately stitched source for final rendering."""
     if not cuts:
         return source, "No source sections selected for removal."
     ffmpeg = tool_path("ffmpeg")
@@ -2939,7 +2939,9 @@ def build_source_cut_cache(
             "size": source_stat.st_size,
             "modified": source_stat.st_mtime_ns,
             "cuts": cuts,
-            "version": 1,
+            # Versioned so an older partial/blank concatenation can never be
+            # reused after the multi-range stitching graph changes.
+            "version": 3,
         },
         sort_keys=True,
     )
@@ -2947,10 +2949,19 @@ def build_source_cut_cache(
     cut_cache_dir = WORK_DIR / "cut_cache"
     cut_cache_dir.mkdir(parents=True, exist_ok=True)
     output_path = cut_cache_dir / f"{source.stem}_cuts_{digest}.mp4"
+    expected_duration = sum(end - start for start, end in keep_ranges)
     if output_path.exists() and output_path.stat().st_size > 1_024:
-        return output_path, "Using the cached source-video cuts."
+        cached_duration = probe_media_duration(output_path)
+        if abs(cached_duration - expected_duration) <= max(
+            0.25, expected_duration * 0.015
+        ):
+            return output_path, "Using the cached source-video cuts."
+        output_path.unlink(missing_ok=True)
 
     filter_parts: List[str] = []
+    has_source_audio = media_has_audio(
+        str(source), source.stat().st_mtime_ns
+    )
     source_labels = [f"cutsource{index}" for index in range(len(keep_ranges))]
     if len(source_labels) > 1:
         filter_parts.append(
@@ -2973,6 +2984,39 @@ def build_source_cut_cache(
             "".join(kept_labels)
             + f"concat=n={len(kept_labels)}:v=1:a=0[cutout]"
         )
+    if has_source_audio:
+        source_audio_labels = [
+            f"cutsourceaudio{index}" for index in range(len(keep_ranges))
+        ]
+        if len(source_audio_labels) > 1:
+            filter_parts.append(
+                f"[0:a]asplit={len(source_audio_labels)}"
+                + "".join(f"[{label}]" for label in source_audio_labels)
+            )
+        kept_audio_labels: List[str] = []
+        for index, (keep_start, keep_end) in enumerate(keep_ranges):
+            input_label = (
+                source_audio_labels[index]
+                if len(source_audio_labels) > 1
+                else "0:a"
+            )
+            output_label = f"cutkeepaudio{index}"
+            filter_parts.append(
+                f"[{input_label}]atrim=start={keep_start:.3f}:"
+                f"end={keep_end:.3f},asetpts=PTS-STARTPTS,"
+                "aresample=44100:async=1:first_pts=0"
+                f"[{output_label}]"
+            )
+            kept_audio_labels.append(f"[{output_label}]")
+        if len(kept_audio_labels) == 1:
+            filter_parts.append(
+                f"{kept_audio_labels[0]}anull[cutaudio]"
+            )
+        else:
+            filter_parts.append(
+                "".join(kept_audio_labels)
+                + f"concat=n={len(kept_audio_labels)}:v=0:a=1[cutaudio]"
+            )
     args = [
         ffmpeg,
         "-y",
@@ -2984,23 +3028,42 @@ def build_source_cut_cache(
         ";".join(filter_parts),
         "-map",
         "[cutout]",
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "20",
-        "-movflags",
-        "+faststart",
-        str(output_path),
     ]
+    if has_source_audio:
+        args.extend(["-map", "[cutaudio]", "-c:a", "aac", "-b:a", "128k"])
+    else:
+        args.extend(["-an"])
+    args.extend(
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "20",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+    )
     result = run_command(args)
     if result.returncode != 0:
         if output_path.exists():
             output_path.unlink()
         return None, result.stderr[-1800:] or "Source-video cutting failed."
-    return output_path, "Selected raw-video sections removed."
+    rendered_duration = probe_media_duration(output_path)
+    if abs(rendered_duration - expected_duration) > max(
+        0.35, expected_duration * 0.02
+    ):
+        output_path.unlink(missing_ok=True)
+        return None, (
+            "The kept clips did not concatenate to the expected duration. "
+            "Please try the selection again."
+        )
+    return output_path, (
+        f"Stitched {len(keep_ranges)} kept section"
+        f"{'s' if len(keep_ranges) != 1 else ''} in timeline order."
+    )
 
 
 def build_browser_preview(source: Path) -> Tuple[Optional[Path], str]:

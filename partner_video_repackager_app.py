@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.02.6"
+APP_BUILD_ID = "Editor-2026.09.02.7"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -784,6 +784,14 @@ def save_pause_audio_upload(uploaded_file, pause_id: str) -> Path:
     ensure_dirs()
     suffix = Path(uploaded_file.name).suffix.lower() or ".wav"
     target = AUDIO_DIR / f"pause_insert_{safe_name(pause_id, 'pause')}{suffix}"
+    target.write_bytes(uploaded_file.getbuffer())
+    return target
+
+
+def save_timeline_audio_upload(uploaded_file) -> Path:
+    """Save the optional MP3 that is placed directly on the final timeline."""
+    ensure_dirs()
+    target = AUDIO_DIR / "timeline_audio_insert.mp3"
     target.write_bytes(uploaded_file.getbuffer())
     return target
 
@@ -3072,6 +3080,7 @@ def export_horizontal_video(
     output_stem: Optional[str] = None,
     tail_mode: str = "end",
     pause_audio_overlays: Optional[List[Dict[str, object]]] = None,
+    timeline_audio_overlays: Optional[List[Dict[str, object]]] = None,
     template_layout: str = "classic",
     template_geometry: Optional[Dict[str, Dict[str, float]]] = None,
     raw_audio_settings: Optional[Dict[str, object]] = None,
@@ -3252,6 +3261,45 @@ def export_horizontal_video(
                 "input": next_input_index,
                 "start": pause_start,
                 "duration": pause_duration,
+            }
+        )
+        next_input_index += 1
+
+    timeline_audio_inputs: List[Dict[str, object]] = []
+    for timeline_audio in timeline_audio_overlays or []:
+        timeline_audio_path = Path(str(timeline_audio.get("path") or ""))
+        if not timeline_audio_path.exists():
+            continue
+        audio_start = max(0.0, float(timeline_audio.get("start") or 0.0))
+        available_duration = probe_media_duration(timeline_audio_path)
+        requested_duration = float(
+            timeline_audio.get("duration") or available_duration or 0.1
+        )
+        audio_duration = max(
+            0.1,
+            min(requested_duration, available_duration or requested_duration),
+        )
+        args.extend(["-i", str(timeline_audio_path)])
+        timeline_audio_inputs.append(
+            {
+                "input": next_input_index,
+                "start": audio_start,
+                "end": audio_start + audio_duration,
+                "duration": audio_duration,
+                "volume": clamp_float(
+                    float(
+                        1.0
+                        if timeline_audio.get("volume") is None
+                        else timeline_audio["volume"]
+                    ),
+                    0.0,
+                    1.0,
+                ),
+                "mode": (
+                    "replace"
+                    if str(timeline_audio.get("mode") or "mix") == "replace"
+                    else "mix"
+                ),
             }
         )
         next_input_index += 1
@@ -3654,6 +3702,54 @@ def export_horizontal_video(
                 "apad[basewithpauseaudio]"
             )
             base_audio_label = "basewithpauseaudio"
+
+    if timeline_audio_inputs:
+        replacing_timeline_audio = [
+            item
+            for item in timeline_audio_inputs
+            if str(item.get("mode") or "mix") == "replace"
+        ]
+        if base_audio_label is not None and replacing_timeline_audio:
+            mute_filters = ",".join(
+                (
+                    "volume=0:"
+                    f"enable='between(t,{float(item['start']):.3f},"
+                    f"{float(item['end']):.3f})'"
+                )
+                for item in replacing_timeline_audio
+            )
+            filter_parts.append(
+                f"[{base_audio_label}]{mute_filters}[timelineaudiobase]"
+            )
+            timeline_audio_labels = ["[timelineaudiobase]"]
+        elif base_audio_label is not None:
+            timeline_audio_labels = [f"[{base_audio_label}]"]
+        else:
+            timeline_audio_labels = []
+        for audio_number, item in enumerate(timeline_audio_inputs):
+            delay_ms = max(0, int(round(float(item["start"]) * 1000)))
+            audio_label = f"timelineaudio{audio_number}"
+            filter_parts.append(
+                f"[{int(item['input'])}:a]"
+                f"atrim=duration={float(item['duration']):.3f},"
+                "asetpts=PTS-STARTPTS,aresample=44100,"
+                "aformat=sample_fmts=fltp:channel_layouts=mono,"
+                f"volume={float(item['volume']):.3f},"
+                f"adelay={delay_ms}:all=1[{audio_label}]"
+            )
+            timeline_audio_labels.append(f"[{audio_label}]")
+        if len(timeline_audio_labels) == 1:
+            filter_parts.append(
+                f"{timeline_audio_labels[0]}apad[basewithtimelineaudio]"
+            )
+        else:
+            filter_parts.append(
+                "".join(timeline_audio_labels)
+                + f"amix=inputs={len(timeline_audio_labels)}:"
+                "duration=longest:dropout_transition=0:normalize=0,"
+                "apad[basewithtimelineaudio]"
+            )
+        base_audio_label = "basewithtimelineaudio"
 
     output_audio_label: Optional[str] = base_audio_label
     if byte_audio_inputs and base_audio_label is not None:
@@ -4633,6 +4729,11 @@ def main() -> None:
                                     "partner_source_cuts",
                                     "partner_source_keeps",
                                     "partner_source_trim_mode",
+                                    "partner_timeline_audio_path",
+                                    "partner_timeline_audio_signature",
+                                    "partner_timeline_audio_start",
+                                    "partner_timeline_audio_volume",
+                                    "partner_timeline_audio_mode",
                                 ):
                                     st.session_state.pop(dependent_key, None)
                                 st.success(import_message)
@@ -4669,6 +4770,11 @@ def main() -> None:
                 st.session_state.pop("partner_latest_export", None)
                 st.session_state.pop("partner_latest_preview", None)
                 st.session_state.pop("partner_latest_export_message", None)
+                st.session_state.pop("partner_timeline_audio_path", None)
+                st.session_state.pop("partner_timeline_audio_signature", None)
+                st.session_state.pop("partner_timeline_audio_start", None)
+                st.session_state.pop("partner_timeline_audio_volume", None)
+                st.session_state.pop("partner_timeline_audio_mode", None)
                 st.success(f"Uploaded: {source_path.name}")
             elif st.session_state.get("partner_video_path"):
                 source_path = Path(st.session_state["partner_video_path"])
@@ -4711,7 +4817,7 @@ def main() -> None:
             label_visibility="collapsed",
         )
         render_stage_header(
-            2,
+            3,
             "Prepare the story",
             "Generate a transcript from the footage or start with a newsroom-ready script.",
         )
@@ -4782,7 +4888,7 @@ def main() -> None:
             )
 
         render_stage_header(
-            3,
+            4,
             "Refine the transcript"
             if script_method == "Generate transcript from video"
             else "Write the narration",
@@ -4808,7 +4914,7 @@ def main() -> None:
 
     with workspace_tabs[1]:
         render_stage_header(
-            4,
+            5,
             "Direct the voice",
             "Choose a voice, set its pace and approve the audio before video rendering.",
         )
@@ -5195,6 +5301,122 @@ def main() -> None:
         if voice_choice == "Upload completed voiceover" and uploaded_voiceover and uploaded_voiceover.exists():
             st.audio(str(uploaded_voiceover))
 
+        st.markdown("#### Add audio to the timeline (optional)")
+        st.caption(
+            "Upload an MP3 and place it at any final-video timestamp. This is "
+            "separate from the primary voiceover."
+        )
+        timeline_audio_upload = st.file_uploader(
+            "Additional MP3 audio",
+            type=["mp3"],
+            key=(
+                "partner_timeline_audio_upload_"
+                f"{int(st.session_state.get('partner_timeline_audio_upload_revision', 0))}"
+            ),
+        )
+        if timeline_audio_upload:
+            timeline_audio_signature = (
+                f"{timeline_audio_upload.name}:{timeline_audio_upload.size}"
+            )
+            if (
+                st.session_state.get("partner_timeline_audio_signature")
+                != timeline_audio_signature
+            ):
+                timeline_audio_path = save_timeline_audio_upload(
+                    timeline_audio_upload
+                )
+                st.session_state["partner_timeline_audio_path"] = str(
+                    timeline_audio_path
+                )
+                st.session_state["partner_timeline_audio_signature"] = (
+                    timeline_audio_signature
+                )
+
+        timeline_audio_path_value = str(
+            st.session_state.get("partner_timeline_audio_path") or ""
+        )
+        timeline_audio_path = (
+            Path(timeline_audio_path_value) if timeline_audio_path_value else None
+        )
+        timeline_audio_insert_for_export: Optional[Dict[str, object]] = None
+        if timeline_audio_path and timeline_audio_path.exists():
+            timeline_audio_duration = max(
+                0.1, probe_media_duration(timeline_audio_path)
+            )
+            st.audio(str(timeline_audio_path))
+            st.session_state.setdefault("partner_timeline_audio_start", 0.0)
+            st.session_state.setdefault("partner_timeline_audio_volume", 100)
+            st.session_state.setdefault(
+                "partner_timeline_audio_mode_label",
+                (
+                    "Replace existing audio"
+                    if st.session_state.get("partner_timeline_audio_mode")
+                    == "replace"
+                    else "Mix with existing audio"
+                ),
+            )
+            timeline_columns = st.columns(
+                [0.34, 0.33, 0.33], vertical_alignment="bottom"
+            )
+            timeline_audio_start = timeline_columns[0].number_input(
+                "Start at final-video time (seconds)",
+                min_value=0.0,
+                step=0.1,
+                key="partner_timeline_audio_start",
+            )
+            timeline_audio_volume_percent = timeline_columns[1].slider(
+                "Audio volume",
+                min_value=0,
+                max_value=100,
+                key="partner_timeline_audio_volume",
+                format="%d%%",
+            )
+            timeline_audio_mode_label = timeline_columns[2].selectbox(
+                "Existing audio while MP3 plays",
+                ["Mix with existing audio", "Replace existing audio"],
+                key="partner_timeline_audio_mode_label",
+            )
+            timeline_audio_mode = (
+                "replace"
+                if timeline_audio_mode_label == "Replace existing audio"
+                else "mix"
+            )
+            st.session_state["partner_timeline_audio_mode"] = timeline_audio_mode
+            st.caption(
+                f"Placed at {compact_time(timeline_audio_start)} → "
+                f"{compact_time(timeline_audio_start + timeline_audio_duration)} "
+                f"({timeline_audio_duration:.1f}s)."
+            )
+            timeline_audio_insert_for_export = {
+                "path": str(timeline_audio_path),
+                "start": float(timeline_audio_start),
+                "duration": float(timeline_audio_duration),
+                "volume": float(timeline_audio_volume_percent) / 100.0,
+                "mode": timeline_audio_mode,
+            }
+            if st.button(
+                "Remove timeline audio",
+                key="partner_remove_timeline_audio",
+            ):
+                for timeline_key in (
+                    "partner_timeline_audio_path",
+                    "partner_timeline_audio_signature",
+                    "partner_timeline_audio_start",
+                    "partner_timeline_audio_volume",
+                    "partner_timeline_audio_mode",
+                    "partner_timeline_audio_mode_label",
+                ):
+                    st.session_state.pop(timeline_key, None)
+                st.session_state["partner_timeline_audio_upload_revision"] = (
+                    int(
+                        st.session_state.get(
+                            "partner_timeline_audio_upload_revision", 0
+                        )
+                    )
+                    + 1
+                )
+                st.rerun()
+
         voice_workspace_ready = bool(
             voice_choice == "No voiceover — use original video audio"
             or
@@ -5232,7 +5454,7 @@ def main() -> None:
 
     with workspace_tabs[0]:
         render_stage_header(
-            5,
+            2,
             "Edit the raw video",
             "Edit directly on the canvas. Open a tool only when you need it.",
         )
@@ -7359,6 +7581,11 @@ def main() -> None:
                     output_stem=source_path.stem,
                     tail_mode=video_tail_mode,
                     pause_audio_overlays=pause_audio_overlays_for_export,
+                    timeline_audio_overlays=(
+                        [timeline_audio_insert_for_export]
+                        if timeline_audio_insert_for_export
+                        else []
+                    ),
                     template_layout=template_layout,
                     template_geometry=template_geometry,
                     raw_audio_settings=raw_audio_settings_for_export,

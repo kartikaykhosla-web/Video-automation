@@ -878,55 +878,86 @@
       return frame;
     }
 
+    function createStageTile(id) {
+      const tile = document.createElement("div");
+      tile.dataset.id = String(id);
+      tile.innerHTML = `<img class="blur" draggable="false"><img class="sharp tile-image" draggable="false"><video class="sharp tile-video" muted playsinline preload="metadata"></video><button type="button" class="tile-play" title="Play video preview" aria-label="Play video preview">▶</button><span class="tile-name"></span><span class="media-kind"></span><span class="resize n" data-resize="n"></span><span class="resize ne" data-resize="ne"></span><span class="resize e" data-resize="e"></span><span class="resize se" data-resize="se"></span><span class="resize s" data-resize="s"></span><span class="resize sw" data-resize="sw"></span><span class="resize w" data-resize="w"></span><span class="resize nw" data-resize="nw"></span>`;
+      const video = tile.querySelector(".tile-video");
+      const playButton = tile.querySelector(".tile-play");
+      video.addEventListener("seeked", () => {
+        if (video.dataset.trimSeekPending !== "1") return;
+        delete video.dataset.trimSeekPending;
+        if (sourceSeekStartedAt !== null) {
+          previewStartedAt += performance.now() - sourceSeekStartedAt;
+          sourceSeekStartedAt = null;
+        }
+        const shouldResume = video.dataset.resumeAfterTrimSeek === "1";
+        delete video.dataset.resumeAfterTrimSeek;
+        if (previewing && shouldResume) video.play().catch(() => {});
+      });
+      playButton.addEventListener("pointerdown", event => event.stopPropagation());
+      playButton.addEventListener("click", async event => {
+        event.preventDefault(); event.stopPropagation();
+        if (String(tile.dataset.id) === "source") {
+          startCompositionPreview();
+          return;
+        }
+        if (video.paused) {
+          stage.querySelectorAll("video.tile-video").forEach(other => {
+            if (other !== video) other.pause();
+          });
+          try { await video.play(); } catch (_) { return; }
+        } else {
+          video.pause();
+        }
+      });
+      video.addEventListener("play", () => { playButton.textContent = "❚❚"; });
+      video.addEventListener("pause", () => { playButton.textContent = "▶"; });
+      video.addEventListener("ended", () => { playButton.textContent = "▶"; });
+      tile.addEventListener("pointerdown", event => {
+        const item = layout.find(value => String(value.id) === String(tile.dataset.id));
+        if (item) beginSpatial(event, item, event.target.dataset.resize || "move");
+      });
+      return tile;
+    }
+
     function renderStage() {
-      stage.innerHTML = '<span class="guide v" id="guideV"></span><span class="guide h" id="guideH"></span>';
       stage.style.backgroundImage = args.background ? `linear-gradient(rgba(8,10,15,.28),rgba(8,10,15,.28)),url('${args.background}')` : "";
+      const activeIds = new Set(layout.map(item => String(item.id)));
+      stage.querySelectorAll(".tile").forEach(tile => {
+        if (!activeIds.has(String(tile.dataset.id))) {
+          tile.querySelector("video.tile-video")?.pause();
+          tile.remove();
+        }
+      });
+      stage.querySelector(".empty")?.remove();
       if (!args.images.length) {
         const empty = document.createElement("div"); empty.className = "empty";
         empty.textContent = "Add images or video bytes above to start arranging them."; stage.appendChild(empty);
         previewMeta.textContent = "No visuals"; return;
       }
       const visible = visibleLayout();
-      [...visible].sort((a,b) => a.z - b.z).forEach(item => {
+      const visibleIds = new Set(visible.map(item => String(item.id)));
+      [...layout].sort((a,b) => a.z - b.z).forEach(item => {
         const image = imageFor(item.id); if (!image) return;
-        const tile = document.createElement("div");
+        let tile = [...stage.querySelectorAll(".tile")].find(
+          candidate => String(candidate.dataset.id) === String(item.id)
+        );
+        if (!tile) {
+          tile = createStageTile(item.id);
+          stage.appendChild(tile);
+        }
         const containsMedia = String(image.fit_mode || "").startsWith("contain");
         tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${containsMedia ? " contain-media" : ""}`;
         tile.dataset.id = String(item.id);
-        Object.assign(tile.style, {left:`${item.x*100}%`, top:`${item.y*100}%`, width:`${item.w*100}%`, height:`${item.h*100}%`, zIndex:item.z});
-        tile.innerHTML = `<img class="blur" draggable="false"><img class="sharp tile-image" draggable="false"><video class="sharp tile-video" muted playsinline preload="metadata"></video><button type="button" class="tile-play" title="Play video preview" aria-label="Play video preview">▶</button><span class="tile-name"></span><span class="media-kind"></span><span class="resize n" data-resize="n"></span><span class="resize ne" data-resize="ne"></span><span class="resize e" data-resize="e"></span><span class="resize se" data-resize="se"></span><span class="resize s" data-resize="s"></span><span class="resize sw" data-resize="sw"></span><span class="resize w" data-resize="w"></span><span class="resize nw" data-resize="nw"></span>`;
-        const video = tile.querySelector(".tile-video");
-        const playButton = tile.querySelector(".tile-play");
-        video.addEventListener("seeked", () => {
-          if (video.dataset.trimSeekPending !== "1") return;
-          delete video.dataset.trimSeekPending;
-          if (sourceSeekStartedAt !== null) {
-            previewStartedAt += performance.now() - sourceSeekStartedAt;
-            sourceSeekStartedAt = null;
-          }
-          const shouldResume = video.dataset.resumeAfterTrimSeek === "1";
-          delete video.dataset.resumeAfterTrimSeek;
-          if (previewing && shouldResume) video.play().catch(() => {});
+        Object.assign(tile.style, {
+          display: visibleIds.has(String(item.id)) ? "block" : "none",
+          left:`${item.x*100}%`,
+          top:`${item.y*100}%`,
+          width:`${item.w*100}%`,
+          height:`${item.h*100}%`,
+          zIndex:item.z
         });
-        playButton.addEventListener("pointerdown", event => event.stopPropagation());
-        playButton.addEventListener("click", async event => {
-          event.preventDefault(); event.stopPropagation();
-          if (String(item.id) === "source") {
-            startCompositionPreview();
-            return;
-          }
-          if (video.paused) {
-            stage.querySelectorAll("video.tile-video").forEach(other => {
-              if (other !== video) other.pause();
-            });
-            try { await video.play(); } catch (_) { return; }
-          } else {
-            video.pause();
-          }
-        });
-        video.addEventListener("play", () => { playButton.textContent = "❚❚"; });
-        video.addEventListener("pause", () => { playButton.textContent = "▶"; });
-        video.addEventListener("ended", () => { playButton.textContent = "▶"; });
         const isSource = String(item.id) === "source";
         const sourcePosition = previewing && isSource
           ? editedTimeToSourcePosition(Math.max(0, previewTime - item.start))
@@ -944,8 +975,6 @@
           isSource && previewing,
           sourcePosition?.rangeIndex ?? null
         );
-        tile.addEventListener("pointerdown", event => beginSpatial(event, item, event.target.dataset.resize || "move"));
-        stage.appendChild(tile);
       });
       const selected = current();
       previewMeta.textContent = selected

@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.10"
+APP_BUILD_ID = "Editor-2026.09.03.11"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -4854,11 +4854,14 @@ def main() -> None:
             "Edit directly on the canvas. Open a tool only when you need it.",
         )
         video_canvas_slot = st.empty()
-        transcript_slot = st.empty()
-        voice_slot = st.empty()
-        editor_controls_slot = st.empty()
+        # These are persistent multi-element sections. Unlike st.empty(),
+        # containers grow with their children, so Streamlit Cloud recalculates
+        # the full document height and the page can scroll to the final control.
+        transcript_slot = st.container()
+        voice_slot = st.container()
+        editor_controls_slot = st.container()
 
-    with transcript_slot.container():
+    with transcript_slot:
         st.session_state.setdefault("partner_script_voice_stage", "Transcript")
         st.segmented_control(
             "Script and voice step",
@@ -4962,7 +4965,7 @@ def main() -> None:
                 ),
             )
 
-    with voice_slot.container():
+    with voice_slot:
         render_stage_header(
             5,
             "Direct the voice",
@@ -5502,7 +5505,7 @@ def main() -> None:
                 height=0,
             )
 
-    with editor_controls_slot.container():
+    with editor_controls_slot:
         template_layout = "two_column"
         latest_editor_preview = Path(
             str(st.session_state.get("partner_latest_preview") or "")

@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.02.9"
+APP_BUILD_ID = "Editor-2026.09.03.10"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -2846,7 +2846,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
         return font_value, lines
 
     requested_font_size = int(
-        clamp_float(float(slug.get("font_size") or 52), 18.0, 112.0)
+        clamp_float(float(slug.get("font_size") or 52), 8.0, 160.0)
     )
     font_size = requested_font_size
     font, lines = wrapped_words(font_size)
@@ -2855,7 +2855,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     line_gap = 13
     block_height = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
     available_text_height = max(40, bottom - text_top - 12)
-    while font_size > 18 and (
+    while font_size > 8 and (
         len(lines) > 2 or block_height > available_text_height
     ):
         font_size -= 2
@@ -4580,7 +4580,6 @@ def main() -> None:
     workspace_tabs = st.tabs(
         [
             "Editor",
-            "Script & voice",
             "Publish",
         ]
     )
@@ -4832,9 +4831,6 @@ def main() -> None:
         if not source_path:
             st.info("Upload a partner video here to open the editor.")
             workspace_tabs[1].info(
-                "Script and voice tools unlock after a raw video is added."
-            )
-            workspace_tabs[2].info(
                 "Publishing tools unlock when the production has a source video."
             )
             return
@@ -4851,7 +4847,18 @@ def main() -> None:
         if meta:
             st.caption(f"{int(meta.get('width', 0))}x{int(meta.get('height', 0))} · {compact_time(meta.get('duration', 0))} · {meta.get('fps', 0):.2f} fps")
 
-    with workspace_tabs[1]:
+        # Reserve the visual order before populating each part later in the run.
+        render_stage_header(
+            2,
+            "Edit the raw video",
+            "Edit directly on the canvas. Open a tool only when you need it.",
+        )
+        video_canvas_slot = st.empty()
+        transcript_slot = st.empty()
+        voice_slot = st.empty()
+        editor_controls_slot = st.empty()
+
+    with transcript_slot.container():
         st.session_state.setdefault("partner_script_voice_stage", "Transcript")
         st.segmented_control(
             "Script and voice step",
@@ -4955,7 +4962,7 @@ def main() -> None:
                 ),
             )
 
-    with workspace_tabs[1]:
+    with voice_slot.container():
         render_stage_header(
             5,
             "Direct the voice",
@@ -5495,15 +5502,7 @@ def main() -> None:
                 height=0,
             )
 
-    with workspace_tabs[0]:
-        render_stage_header(
-            2,
-            "Edit the raw video",
-            "Edit directly on the canvas. Open a tool only when you need it.",
-        )
-        # Reserve the primary editor position before reading its supporting
-        # controls. The canvas is populated later once every layer is known.
-        video_canvas_slot = st.empty()
+    with editor_controls_slot.container():
         template_layout = "two_column"
         latest_editor_preview = Path(
             str(st.session_state.get("partner_latest_preview") or "")
@@ -5851,7 +5850,7 @@ def main() -> None:
         ):
             canvas_images.insert(
                 0,
-                {"id": "header_image", "name": "Top PNG", "kind": "image", "deletable": True, "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
+                {"id": "header_image", "name": "Top PNG", "kind": "image", "deletable": True, "fit_mode": "contain_transparent", "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
             )
         if template_loop_paths_for_editor:
             loop_preview_path = template_loop_paths_for_editor[0]
@@ -6619,6 +6618,7 @@ def main() -> None:
                     "id": "top-png",
                     "path": str(template_header_path),
                     "media_type": "image",
+                    "fit_mode": "contain_transparent",
                     "start": 0.0,
                     "duration": template_duration,
                     "x": float(header_image_geometry.get("x", 0.01)),
@@ -6854,12 +6854,12 @@ def main() -> None:
                 )
                 slug_font_size = text_columns[1].number_input(
                     "Text size",
-                    min_value=18,
-                    max_value=112,
+                    min_value=8,
+                    max_value=160,
                     value=int(
-                        clamp_float(float(slug.get("font_size") or 52), 18, 112)
+                        clamp_float(float(slug.get("font_size") or 52), 8, 160)
                     ),
-                    step=2,
+                    step=1,
                     key=f"partner_slug_font_size_{slug_id}",
                     help="Controls this slug's headline font size.",
                 )
@@ -7391,27 +7391,7 @@ def main() -> None:
                 )
                 break
 
-        st.divider()
-        if st.button(
-            "Continue to Script & voice →",
-            type="primary",
-            width="stretch",
-            key="partner_continue_to_review",
-        ):
-            components.html(
-                """
-                <script>
-                const tabs = window.parent.document.querySelectorAll('[role="tab"]');
-                const scriptVoiceTab = Array.from(tabs).find(
-                    (tab) => tab.textContent.trim() === 'Script & voice'
-                );
-                if (scriptVoiceTab) scriptVoiceTab.click();
-                </script>
-                """,
-                height=0,
-            )
-
-    with workspace_tabs[2]:
+    with workspace_tabs[1]:
         render_stage_header(
             6,
             "Publish",

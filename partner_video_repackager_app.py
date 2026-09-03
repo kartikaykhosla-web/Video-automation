@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.21"
+APP_BUILD_ID = "Editor-2026.09.03.22"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -2702,6 +2702,91 @@ def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
             canvas.alpha_composite(fitted, (x, y))
         canvas.save(output)
     return output
+
+
+def slug_text_entries(slug: Dict[str, object]) -> List[str]:
+    """Return clean, ordered text entries for one positioned slug group."""
+    stored_entries = slug.get("text_entries")
+    if isinstance(stored_entries, list):
+        entries = [
+            re.sub(r"\s+", " ", str(value or "")).strip()
+            for value in stored_entries
+        ]
+        entries = [value for value in entries if value]
+        if entries:
+            return entries
+    legacy_text = re.sub(r"\s+", " ", str(slug.get("text") or "")).strip()
+    return [legacy_text] if legacy_text else []
+
+
+def expand_slug_text_timeline(
+    slug: Dict[str, object], video_duration: float
+) -> List[Dict[str, object]]:
+    """Expand one slug group into render-ready, non-overlapping text slots."""
+    entries = slug_text_entries(slug)
+    if not entries:
+        return []
+    duration = max(0.1, float(video_duration))
+    rotation_mode = str(slug.get("rotation_mode") or "end_to_end")
+    if rotation_mode != "equal_duration":
+        entries = entries[:1]
+    slot_duration = duration / len(entries)
+    expanded: List[Dict[str, object]] = []
+    group_id = str(slug.get("id") or "slug")
+    for entry_index, entry in enumerate(entries):
+        start = entry_index * slot_duration
+        end = duration if entry_index == len(entries) - 1 else start + slot_duration
+        expanded.append(
+            {
+                **slug,
+                "id": f"{group_id}:text:{entry_index}",
+                "group_id": group_id,
+                "text": entry,
+                "start": start,
+                "duration": max(0.1, end - start),
+            }
+        )
+    return expanded
+
+
+def add_partner_slug(video_duration: float) -> None:
+    """Add a slug group before Streamlit begins the widget rerun."""
+    slug_items = st.session_state.setdefault("partner_slug_overlays", [])
+    slug_items.append(
+        {
+            "id": time.time_ns(),
+            "text": "",
+            "text_entries": [],
+            "rotation_mode": "end_to_end",
+            "highlight_text": "",
+            "label": "",
+            "style": "Jagran Red",
+            "background_color": SLUG_STYLE_PRESETS["Jagran Red"]["background"],
+            "background_end_color": SLUG_STYLE_PRESETS["Jagran Red"]["background_end"],
+            "highlight_color": SLUG_STYLE_PRESETS["Jagran Red"]["accent"],
+            "text_color": SLUG_STYLE_PRESETS["Jagran Red"]["text"],
+            "font_name": DEFAULT_HINDI_SLUG_FONT,
+            "font_size": 52,
+            "start": 0.0,
+            "duration": max(0.1, float(video_duration)),
+            "geometry": {
+                "x": 0.22,
+                "y": 0.03,
+                "w": 0.74,
+                "h": 0.16,
+                "z": len(slug_items) + 10,
+            },
+        }
+    )
+
+
+def remove_partner_slug(slug_id: str) -> None:
+    """Remove a slug group in the button callback to avoid a second rerun."""
+    st.session_state["partner_slug_overlays"] = [
+        item
+        for item in st.session_state.get("partner_slug_overlays", [])
+        if str(item.get("id")) != str(slug_id)
+    ]
 
 
 def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
@@ -6834,6 +6919,8 @@ def main() -> None:
                     {
                         "id": time.time_ns(),
                         "text": legacy_text,
+                        "text_entries": [legacy_text],
+                        "rotation_mode": "end_to_end",
                         "highlight_text": str(
                             st.session_state.get("partner_slug_highlight") or ""
                         ),
@@ -6868,81 +6955,33 @@ def main() -> None:
         add_slug_columns[0].caption(
             f"{len(slug_items)} slug{'s' if len(slug_items) != 1 else ''} added"
         )
-        if add_slug_columns[1].button(
+        add_slug_columns[1].button(
             "＋ Add slug",
-            use_container_width=True,
+            width="stretch",
             key="partner_add_slug",
-        ):
-            last_end = max(
-                (
-                    float(item.get("start") or 0.0)
-                    + float(item.get("duration") or 5.0)
-                    for item in slug_items
-                ),
-                default=0.0,
-            )
-            default_duration = min(5.0, editor_video_duration)
-            default_start = min(
-                last_end,
-                max(0.0, editor_video_duration - default_duration),
-            )
-            slug_items.append(
-                {
-                    "id": time.time_ns(),
-                    "text": "",
-                    "highlight_text": "",
-                    "label": "",
-                    "style": "Jagran Red",
-                    "background_color": SLUG_STYLE_PRESETS["Jagran Red"]["background"],
-                    "background_end_color": SLUG_STYLE_PRESETS["Jagran Red"]["background_end"],
-                    "highlight_color": SLUG_STYLE_PRESETS["Jagran Red"]["accent"],
-                    "text_color": SLUG_STYLE_PRESETS["Jagran Red"]["text"],
-                    "font_name": DEFAULT_HINDI_SLUG_FONT,
-                    "font_size": 52,
-                    "start": default_start,
-                    "duration": default_duration,
-                    "geometry": {
-                        "x": 0.22,
-                        "y": 0.03,
-                        "w": 0.74,
-                        "h": 0.16,
-                        "z": len(slug_items) + 10,
-                    },
-                }
-            )
-            st.session_state["partner_slug_overlays"] = slug_items
-            st.rerun()
+            on_click=add_partner_slug,
+            args=(editor_video_duration,),
+        )
 
         slugs_for_export: List[Dict[str, object]] = []
         slug_editor_images: List[Dict[str, object]] = []
         slug_editor_layout: List[Dict[str, object]] = []
-        remove_slug_id: Optional[str] = None
-
         for slug_index, slug in enumerate(slug_items):
             slug_id = str(slug["id"])
-            slug_start_value = clamp_float(
-                float(slug.get("start") or 0.0),
-                0.0,
-                max(0.0, editor_video_duration - 0.1),
-            )
-            slug_duration_value = clamp_float(
-                float(slug.get("duration") or 5.0),
-                0.1,
-                max(0.1, editor_video_duration - slug_start_value),
-            )
+            existing_text_entries = slug_text_entries(slug)
             slug_label = (
-                str(slug.get("text") or "").strip()
+                (existing_text_entries[0] if existing_text_entries else "")
                 or f"Untitled slug {slug_index + 1}"
             )
-            timing_label = (
-                f"{compact_time(slug_start_value)}–"
-                f"{compact_time(slug_start_value + slug_duration_value)}"
-            )
+            timing_label = f"0:00–{compact_time(editor_video_duration)}"
             with st.expander(
                 f"Slug {slug_index + 1} · {timing_label} · {slug_label[:48]}",
                 expanded=not str(slug.get("text") or "").strip(),
             ):
-                style_columns = st.columns([0.56, 0.44])
+                slug_form = st.form(
+                    key=f"partner_slug_form_{slug_id}", border=False
+                )
+                style_columns = slug_form.columns([0.56, 0.44])
                 current_style = str(slug.get("style") or "Jagran Red")
                 if current_style not in SLUG_STYLE_PRESETS:
                     current_style = "Jagran Red"
@@ -6958,13 +6997,47 @@ def main() -> None:
                     key=f"partner_slug_label_{slug_id}",
                     placeholder="NEWS UPDATE",
                 )
-                text_columns = st.columns([0.72, 0.28], vertical_alignment="bottom")
-                slug_text = text_columns[0].text_input(
-                    "Slug text",
-                    value=str(slug.get("text") or ""),
-                    key=f"partner_slug_text_{slug_id}",
-                    placeholder="Enter the headline or label to display",
+                current_rotation_mode = str(
+                    slug.get("rotation_mode") or "end_to_end"
                 )
+                rotation_mode_label = slug_form.radio(
+                    "Slug text timing",
+                    ["End to end", "Divide into equal duration"],
+                    index=1 if current_rotation_mode == "equal_duration" else 0,
+                    horizontal=True,
+                    key=f"partner_slug_rotation_mode_{slug_id}",
+                    help=(
+                        "End to end displays one text for the complete edited video. "
+                        "Divide into equal duration rotates multiple texts in equal slots."
+                    ),
+                )
+                rotation_mode = (
+                    "equal_duration"
+                    if rotation_mode_label == "Divide into equal duration"
+                    else "end_to_end"
+                )
+                text_columns = slug_form.columns(
+                    [0.72, 0.28], vertical_alignment="bottom"
+                )
+                rotation_text_value = text_columns[0].text_area(
+                    "Slug text(s) — one per line",
+                    value="\n".join(existing_text_entries),
+                    key=f"partner_slug_text_entries_{slug_id}",
+                    placeholder="First text\nSecond text\nThird text",
+                    help=(
+                        "In End to end mode, only the first non-empty line is used. "
+                        "In equal-duration mode, every non-empty line rotates in the "
+                        "same canvas position."
+                    ),
+                )
+                rotation_texts = [
+                    re.sub(r"\s+", " ", value).strip()
+                    for value in rotation_text_value.splitlines()
+                    if re.sub(r"\s+", " ", value).strip()
+                ]
+                if rotation_mode == "end_to_end":
+                    rotation_texts = rotation_texts[:1]
+                slug_text = rotation_texts[0] if rotation_texts else ""
                 slug_font_size = text_columns[1].number_input(
                     "Text size",
                     min_value=4,
@@ -6983,7 +7056,7 @@ def main() -> None:
                         if re.search(r"[\u0900-\u097f]", slug_text)
                         else DEFAULT_ENGLISH_SLUG_FONT
                     )
-                slug_font_name = st.selectbox(
+                slug_font_name = slug_form.selectbox(
                     "Font type",
                     list(PUBLISHER_SLUG_FONTS),
                     index=list(PUBLISHER_SLUG_FONTS).index(current_font_name),
@@ -6993,7 +7066,18 @@ def main() -> None:
                         "and 15 for English headlines."
                     ),
                 )
-                slug_highlight = st.text_input(
+                if rotation_mode == "equal_duration" and rotation_texts:
+                    seconds_per_text = editor_video_duration / len(rotation_texts)
+                    slug_form.caption(
+                        f"{len(rotation_texts)} texts · {seconds_per_text:.2f} seconds "
+                        "each · rotating across the complete edited video"
+                    )
+                elif rotation_mode == "end_to_end":
+                    slug_form.caption(
+                        "This text remains visible from the beginning to the end of "
+                        "the edited video."
+                    )
+                slug_highlight = slug_form.text_input(
                     "Text to highlight (optional)",
                     value=str(slug.get("highlight_text") or ""),
                     key=f"partner_slug_highlight_{slug_id}",
@@ -7005,7 +7089,7 @@ def main() -> None:
                 )
                 selected_preset = SLUG_STYLE_PRESETS[slug_style]
                 if slug_style == "Custom":
-                    colour_columns = st.columns(3)
+                    colour_columns = slug_form.columns(3)
                     slug_background = colour_columns[0].color_picker(
                         "Panel colour",
                         value=str(
@@ -7034,7 +7118,7 @@ def main() -> None:
                     slug_background = selected_preset["background"]
                     slug_background_end = selected_preset["background_end"]
                     slug_highlight_colour = selected_preset["accent"]
-                    slug_text_colour = st.color_picker(
+                    slug_text_colour = slug_form.color_picker(
                         "Font colour",
                         value=str(
                             slug.get("text_color") or selected_preset["text"]
@@ -7042,34 +7126,20 @@ def main() -> None:
                         key=f"partner_slug_text_colour_{slug_id}",
                         help="Sets the text colour without adding an outline or border.",
                     )
-                    st.caption(
+                    slug_form.caption(
                         "The preset supplies the panel and accent colours. Font "
                         "colour can be changed independently."
                     )
-                timing_columns = st.columns(2)
-                slug_start = timing_columns[0].number_input(
-                    "Start timestamp (seconds)",
-                    min_value=0.0,
-                    max_value=max(0.0, editor_video_duration - 0.1),
-                    value=slug_start_value,
-                    step=0.1,
-                    key=f"partner_slug_start_{slug_id}",
+                slug_form.form_submit_button(
+                    "Apply slug changes",
+                    type="primary",
+                    width="stretch",
                 )
-                maximum_slug_duration = max(
-                    0.1, editor_video_duration - float(slug_start)
-                )
-                slug_duration = timing_columns[1].number_input(
-                    "Duration (seconds)",
-                    min_value=0.1,
-                    max_value=maximum_slug_duration,
-                    value=min(slug_duration_value, maximum_slug_duration),
-                    step=0.1,
-                    key=f"partner_slug_duration_{slug_id}",
-                )
-
                 slug.update(
                     {
                         "text": slug_text.strip(),
+                        "text_entries": rotation_texts,
+                        "rotation_mode": rotation_mode,
                         "highlight_text": slug_highlight.strip(),
                         "label": slug_label_text.strip(),
                         "style": slug_style,
@@ -7079,8 +7149,8 @@ def main() -> None:
                         "text_color": slug_text_colour,
                         "font_size": int(slug_font_size),
                         "font_name": slug_font_name,
-                        "start": float(slug_start),
-                        "duration": float(slug_duration),
+                        "start": 0.0,
+                        "duration": float(editor_video_duration),
                     }
                 )
                 if slug_text.strip():
@@ -7098,9 +7168,32 @@ def main() -> None:
                         "z": int(existing_geometry.get("z", slug_index + 10)),
                     }
                     slug["z"] = int(slug["geometry"].get("z", 3))
-                    slugs_for_export.append(dict(slug))
+                    expanded_slug_items = expand_slug_text_timeline(
+                        slug, editor_video_duration
+                    )
+                    slugs_for_export.extend(expanded_slug_items)
                     try:
-                        slug_preview_path = build_slug_overlay_asset(slug, source_path)
+                        preview_playlist: List[Dict[str, object]] = []
+                        for expanded_slug in expanded_slug_items:
+                            slug_preview_path = build_slug_overlay_asset(
+                                expanded_slug, source_path
+                            )
+                            preview_playlist.append(
+                                {
+                                    "name": str(expanded_slug["text"]),
+                                    "kind": "slug",
+                                    "src": slug_overlay_preview_data_url(
+                                        str(slug_preview_path),
+                                        slug_preview_path.stat().st_mtime_ns,
+                                        float(slug["geometry"]["x"]),
+                                        float(slug["geometry"]["y"]),
+                                        float(slug["geometry"]["w"]),
+                                        float(slug["geometry"]["h"]),
+                                    ),
+                                    "duration": float(expanded_slug["duration"]),
+                                }
+                            )
+                        first_preview = preview_playlist[0]
                         slug_editor_images.append(
                             {
                                 "id": slug_id,
@@ -7108,24 +7201,18 @@ def main() -> None:
                                 "kind": "slug",
                                 "text_only": slug_style == "Text only",
                                 "fit_mode": "contain_transparent",
-                                "src": slug_overlay_preview_data_url(
-                                    str(slug_preview_path),
-                                    slug_preview_path.stat().st_mtime_ns,
-                                    float(slug["geometry"]["x"]),
-                                    float(slug["geometry"]["y"]),
-                                    float(slug["geometry"]["w"]),
-                                    float(slug["geometry"]["h"]),
-                                ),
-                                "start": float(slug_start),
-                                "duration": float(slug_duration),
+                                "src": str(first_preview["src"]),
+                                "playlist": preview_playlist,
+                                "start": 0.0,
+                                "duration": float(editor_video_duration),
                             }
                         )
                         slug_editor_layout.append(
                             {
                                 "id": slug_id,
                                 **slug["geometry"],
-                                "start": float(slug_start),
-                                "duration": float(slug_duration),
+                                "start": 0.0,
+                                "duration": float(editor_video_duration),
                             }
                         )
                     except Exception as exc:
@@ -7135,17 +7222,13 @@ def main() -> None:
                         )
                 else:
                     st.warning("Enter text for this slug or remove it.")
-                if st.button(
+                st.button(
                     "Remove this slug",
                     key=f"partner_remove_slug_{slug_id}",
-                ):
-                    remove_slug_id = slug_id
+                    on_click=remove_partner_slug,
+                    args=(slug_id,),
+                )
 
-        if remove_slug_id is not None:
-            st.session_state["partner_slug_overlays"] = [
-                item for item in slug_items if str(item["id"]) != remove_slug_id
-            ]
-            st.rerun()
         st.session_state["partner_slug_overlays"] = slug_items
 
         # Slugs are regular layers in the one and only video canvas. Prefixing
@@ -7496,14 +7579,19 @@ def main() -> None:
         # Use the editor-updated geometry/timing in the export created during
         # this same Streamlit run; do not wait for another interaction/rerun.
         slugs_for_export = [
-            dict(item)
+            expanded_slug
             for item in slug_items
-            if str(item.get("text") or "").strip()
+            for expanded_slug in expand_slug_text_timeline(
+                item, editor_video_duration
+            )
         ]
 
         ordered_slugs = sorted(
             slugs_for_export,
-            key=lambda item: (float(item.get("start") or 0.0), int(item["id"])),
+            key=lambda item: (
+                float(item.get("start") or 0.0),
+                str(item.get("id") or ""),
+            ),
         )
         for first, second in zip(ordered_slugs, ordered_slugs[1:]):
             first_end = float(first["start"]) + float(first["duration"])
@@ -7542,7 +7630,7 @@ def main() -> None:
             voice_ready = True
         else:
             voice_ready = True
-        slug_ready = len(slugs_for_export) == len(slug_items)
+        slug_ready = all(slug_text_entries(item) for item in slug_items)
         pause_inserts_ready = (
             voice_choice == "No voiceover — use original video audio"
             or all(

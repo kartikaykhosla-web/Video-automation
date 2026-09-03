@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.19"
+APP_BUILD_ID = "Editor-2026.09.03.20"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -3918,11 +3918,11 @@ def export_horizontal_video(
             "-preset",
             "ultrafast",
             "-crf",
-            "25",
+            "20",
             "-maxrate",
-            "5M",
+            "12M",
             "-bufsize",
-            "10M",
+            "24M",
             "-pix_fmt",
             "yuv420p",
             "-g",
@@ -3934,7 +3934,7 @@ def export_horizontal_video(
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            "192k",
             "-movflags",
             "+faststart",
             str(output_path),
@@ -3943,6 +3943,15 @@ def export_horizontal_video(
     result = run_command(args)
     if result.returncode != 0:
         return None, result.stderr[-2200:] or "Horizontal export failed."
+    output_meta = probe_video(output_path)
+    output_width = int(output_meta.get("width") or 0)
+    output_height = int(output_meta.get("height") or 0)
+    if (output_width, output_height) != (OUTPUT_WIDTH, OUTPUT_HEIGHT):
+        output_path.unlink(missing_ok=True)
+        return None, (
+            "The export did not finish at Full HD resolution "
+            f"({OUTPUT_WIDTH}x{OUTPUT_HEIGHT}). Please render it again."
+        )
     return output_path, f"Horizontal 1920x1080 video exported: {output_path.name}"
 
 
@@ -7622,7 +7631,12 @@ def main() -> None:
                 )
 
             pause_audio_overlays_for_export: List[Dict[str, object]] = []
-            for pause_index, pause in enumerate(voice_pause_items):
+            active_pause_items = (
+                []
+                if voice_choice == "No voiceover — use original video audio"
+                else voice_pause_items
+            )
+            for pause_index, pause in enumerate(active_pause_items):
                 insert_mode = str(pause.get("insert_mode") or "silent")
                 if insert_mode == "silent":
                     continue
@@ -7707,7 +7721,21 @@ def main() -> None:
                     return
                 st.success(cut_message)
 
-            with st.spinner("Composing voiceover and overlays on the edited raw video..."):
+            has_visual_overlays = bool(image_overlays_for_export or slugs_for_export)
+            has_extra_audio = bool(
+                pause_audio_overlays_for_export or timeline_audio_insert_for_export
+            )
+            if voiceover_path:
+                render_status = "Composing voiceover and overlays in Full HD..."
+            elif has_extra_audio and has_visual_overlays:
+                render_status = "Composing audio and overlays in Full HD..."
+            elif has_extra_audio:
+                render_status = "Composing audio with the edited video in Full HD..."
+            elif has_visual_overlays:
+                render_status = "Composing overlays on the edited video in Full HD..."
+            else:
+                render_status = "Rendering the edited video in Full HD..."
+            with st.spinner(render_status):
                 output, message = export_horizontal_video(
                     render_source_path,
                     edited_transcript,

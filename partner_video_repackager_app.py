@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.18"
+APP_BUILD_ID = "Editor-2026.09.03.19"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -2636,7 +2636,7 @@ def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
         f"{float(item.get(key) or 0):.5f}" for key in ("x", "y", "w", "h")
     ) if custom_layout else "legacy"
     cache_payload = (
-        f"visual-editor-v3-alpha-cover:{image_path}:{image_path.stat().st_mtime_ns}:"
+        f"visual-editor-v4-fit-mode:{image_path}:{image_path.stat().st_mtime_ns}:"
         f"{placement}:{width_percent}:{layout_values}:{fit_mode}"
     )
     digest = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:16]
@@ -2669,13 +2669,6 @@ def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
                     ),
                 )
             else:
-                # Floating PNGs can contain transparent padding around the
-                # visible artwork. Remove only that empty alpha area before a
-                # cover crop so it cannot appear as bands above or below.
-                if fit_mode == "cover":
-                    alpha_bounds = still.getchannel("A").getbbox()
-                    if alpha_bounds:
-                        still = still.crop(alpha_bounds)
                 # Editor media uses a true cover crop. This fills the selected
                 # box without inventing blurred bands above or below the asset.
                 tile = ImageOps.fit(
@@ -5996,7 +5989,7 @@ def main() -> None:
                         str(floating_path), floating_path.stat().st_mtime_ns
                     )
                     if floating_type == "video"
-                    else transparent_overlay_preview_data_url(
+                    else image_preview_data_url(
                         str(floating_path), floating_path.stat().st_mtime_ns
                     )
                 )
@@ -6036,7 +6029,7 @@ def main() -> None:
                     "id": "images",
                     "name": f"Floating media · {len(floating_playlist)} items",
                     "kind": str(first_floating["kind"]),
-                    "fit_mode": "cover",
+                    "fit_mode": "contain_transparent",
                     "deletable": True,
                     "src": str(first_floating["src"]),
                     "video_src": str(first_floating["video_src"]),
@@ -6770,7 +6763,7 @@ def main() -> None:
                             "id": f"template-loop-{panel_index}-{panel_time:.2f}",
                             "path": str(image_path),
                             "media_type": media_type,
-                            "fit_mode": "cover",
+                            "fit_mode": "contain_transparent",
                             "clip_duration": float(floating_item.get("clip_duration") or 0.0),
                             "trim_start": 0.0,
                             "use_clip_audio": bool(floating_item.get("use_clip_audio")),

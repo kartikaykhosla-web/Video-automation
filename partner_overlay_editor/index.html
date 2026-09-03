@@ -514,6 +514,60 @@
         post("streamlit:setFrameHeight", {height: nextHeight});
       });
     };
+    const installParentScrollGuard = () => {
+      try {
+        const doc = window.parent.document;
+        const key = "__partnerStudioScrollGuard";
+        if (window.parent[key]?.disconnect) window.parent[key].disconnect();
+        let frame = 0;
+        const sync = () => {
+          cancelAnimationFrame(frame);
+          frame = requestAnimationFrame(() => {
+            const panel = Array.from(doc.querySelectorAll('[role="tabpanel"]'))
+              .find(item => item.offsetParent !== null);
+            if (!panel) return;
+            const panelTop = panel.getBoundingClientRect().top;
+            let contentBottom = panelTop;
+            panel.querySelectorAll("*").forEach(item => {
+              if (item.offsetParent === null) return;
+              const bottom = item.getBoundingClientRect().bottom;
+              if (Number.isFinite(bottom)) contentBottom = Math.max(contentBottom, bottom);
+            });
+            const required = Math.max(
+              panel.scrollHeight,
+              Math.ceil(contentBottom - panelTop + 160)
+            );
+            const height = `${required}px`;
+            if (panel.style.minHeight !== height) {
+              panel.style.setProperty("min-height", height, "important");
+            }
+            panel.style.setProperty("overflow", "visible", "important");
+            const tabs = panel.closest('[data-testid="stTabs"]');
+            if (tabs) tabs.style.setProperty("overflow", "visible", "important");
+            const main = doc.querySelector('[data-testid="stMain"]');
+            if (main) {
+              main.style.setProperty("overflow-y", "auto", "important");
+              main.style.setProperty("overscroll-behavior-y", "contain", "important");
+              main.style.setProperty("padding-bottom", "120px", "important");
+            }
+          });
+        };
+        const observer = new MutationObserver(sync);
+        const app = doc.querySelector('[data-testid="stAppViewContainer"]');
+        if (app) observer.observe(app, {childList:true, subtree:true});
+        const interval = window.setInterval(sync, 600);
+        window.parent[key] = {
+          disconnect: () => {
+            observer.disconnect();
+            window.clearInterval(interval);
+            cancelAnimationFrame(frame);
+          }
+        };
+        sync();
+      } catch (_) {
+        // The editor still works if a host browser blocks parent-frame access.
+      }
+    };
     const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
     const videoDuration = () => Math.max(.1, Number(args.video_duration) || 60);
     const sourceDuration = () => Math.max(.1, Number(args.source_duration) || videoDuration());
@@ -1736,7 +1790,7 @@
       shellResizeObserver.observe(editorShell);
     }
     window.addEventListener("load", setHeight);
-    ready(); setHeight();
+    ready(); setHeight(); installParentScrollGuard();
   </script>
 </body>
 </html>

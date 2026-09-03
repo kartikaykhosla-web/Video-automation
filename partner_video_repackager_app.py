@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.17"
+APP_BUILD_ID = "Editor-2026.09.03.18"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -2636,7 +2636,7 @@ def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
         f"{float(item.get(key) or 0):.5f}" for key in ("x", "y", "w", "h")
     ) if custom_layout else "legacy"
     cache_payload = (
-        f"visual-editor-v2-cover:{image_path}:{image_path.stat().st_mtime_ns}:"
+        f"visual-editor-v3-alpha-cover:{image_path}:{image_path.stat().st_mtime_ns}:"
         f"{placement}:{width_percent}:{layout_values}:{fit_mode}"
     )
     digest = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:16]
@@ -2669,6 +2669,13 @@ def build_image_overlay_asset(item: Dict[str, object], source: Path) -> Path:
                     ),
                 )
             else:
+                # Floating PNGs can contain transparent padding around the
+                # visible artwork. Remove only that empty alpha area before a
+                # cover crop so it cannot appear as bands above or below.
+                if fit_mode == "cover":
+                    alpha_bounds = still.getchannel("A").getbbox()
+                    if alpha_bounds:
+                        still = still.crop(alpha_bounds)
                 # Editor media uses a true cover crop. This fills the selected
                 # box without inventing blurred bands above or below the asset.
                 tile = ImageOps.fit(
@@ -5716,7 +5723,52 @@ def main() -> None:
                 )
                 st.session_state["partner_template_header_signature"] = header_signature
                 st.session_state["partner_template_header_path"] = str(header_path)
+                st.session_state["partner_template_header_start"] = 0.0
+                st.session_state["partner_template_header_duration"] = float(
+                    editor_video_duration
+                )
                 hidden_template_components.discard("header_image")
+        template_header_path_for_timing = Path(
+            str(st.session_state.get("partner_template_header_path") or "")
+        )
+        top_png_start = 0.0
+        top_png_duration = float(editor_video_duration)
+        if template_header_path_for_timing.is_file():
+            media_panel.markdown("**Top PNG timing**")
+            top_png_start_key = "partner_template_header_start"
+            top_png_duration_key = "partner_template_header_duration"
+            st.session_state.setdefault(top_png_start_key, 0.0)
+            st.session_state[top_png_start_key] = clamp_float(
+                float(st.session_state[top_png_start_key]),
+                0.0,
+                max(0.0, editor_video_duration - 0.1),
+            )
+            top_png_timing_columns = media_panel.columns(2)
+            top_png_start = top_png_timing_columns[0].number_input(
+                "Start timestamp (seconds)",
+                min_value=0.0,
+                max_value=max(0.0, float(editor_video_duration) - 0.1),
+                step=0.1,
+                key=top_png_start_key,
+            )
+            maximum_top_png_duration = max(
+                0.1, float(editor_video_duration) - float(top_png_start)
+            )
+            st.session_state.setdefault(
+                top_png_duration_key, maximum_top_png_duration
+            )
+            st.session_state[top_png_duration_key] = clamp_float(
+                float(st.session_state[top_png_duration_key]),
+                0.1,
+                maximum_top_png_duration,
+            )
+            top_png_duration = top_png_timing_columns[1].number_input(
+                "Duration (seconds)",
+                min_value=0.1,
+                max_value=maximum_top_png_duration,
+                step=0.1,
+                key=top_png_duration_key,
+            )
         loop_signature = tuple(
             f"{item.name}:{item.size}" for item in (template_loop_uploads or [])
         )
@@ -5848,7 +5900,7 @@ def main() -> None:
             and "header_image" not in hidden_template_components
         ):
             default_canvas_layout.append(
-                {"id": "header_image", "x": 0.01, "y": 0.01, "w": 0.20, "h": 0.18, "z": 3, "start": 0.0, "duration": editor_video_duration}
+                {"id": "header_image", "x": 0.01, "y": 0.01, "w": 0.20, "h": 0.18, "z": 3, "start": float(top_png_start), "duration": float(top_png_duration)}
             )
         if template_loop_paths_for_editor and "images" not in hidden_template_components:
             default_canvas_layout.append(
@@ -5870,6 +5922,10 @@ def main() -> None:
         for default_item in default_canvas_layout:
             if default_item["id"] not in current_canvas_ids:
                 current_canvas_layout.append(default_item)
+        for canvas_item in current_canvas_layout:
+            if str(canvas_item.get("id")) == "header_image":
+                canvas_item["start"] = float(top_png_start)
+                canvas_item["duration"] = float(top_png_duration)
         canvas_images = [
             {
                 "id": "source",
@@ -5901,7 +5957,7 @@ def main() -> None:
         ):
             canvas_images.insert(
                 0,
-                {"id": "header_image", "name": "Top PNG", "kind": "image", "deletable": True, "fit_mode": "contain_transparent", "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration},
+                {"id": "header_image", "name": "Top PNG", "kind": "image", "deletable": True, "fit_mode": "contain_transparent", "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": float(top_png_start), "duration": float(top_png_duration)},
             )
         if template_loop_paths_for_editor:
             loop_preview_path = template_loop_paths_for_editor[0]
@@ -5940,7 +5996,7 @@ def main() -> None:
                         str(floating_path), floating_path.stat().st_mtime_ns
                     )
                     if floating_type == "video"
-                    else image_preview_data_url(
+                    else transparent_overlay_preview_data_url(
                         str(floating_path), floating_path.stat().st_mtime_ns
                     )
                 )
@@ -5980,6 +6036,7 @@ def main() -> None:
                     "id": "images",
                     "name": f"Floating media · {len(floating_playlist)} items",
                     "kind": str(first_floating["kind"]),
+                    "fit_mode": "cover",
                     "deletable": True,
                     "src": str(first_floating["src"]),
                     "video_src": str(first_floating["video_src"]),
@@ -6670,8 +6727,8 @@ def main() -> None:
                     "path": str(template_header_path),
                     "media_type": "image",
                     "fit_mode": "contain_transparent",
-                    "start": 0.0,
-                    "duration": template_duration,
+                    "start": float(top_png_start),
+                    "duration": float(top_png_duration),
                     "x": float(header_image_geometry.get("x", 0.01)),
                     "y": float(header_image_geometry.get("y", 0.01)),
                     "w": float(header_image_geometry.get("w", 0.20)),
@@ -6713,6 +6770,7 @@ def main() -> None:
                             "id": f"template-loop-{panel_index}-{panel_time:.2f}",
                             "path": str(image_path),
                             "media_type": media_type,
+                            "fit_mode": "cover",
                             "clip_duration": float(floating_item.get("clip_duration") or 0.0),
                             "trim_start": 0.0,
                             "use_clip_audio": bool(floating_item.get("use_clip_audio")),

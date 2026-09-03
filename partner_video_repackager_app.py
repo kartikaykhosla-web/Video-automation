@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.15"
+APP_BUILD_ID = "Editor-2026.09.03.16"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -842,6 +842,39 @@ def transparent_overlay_preview_data_url(path_value: str, modified_ns: int) -> s
         alpha_bounds = image.getchannel("A").getbbox()
         if alpha_bounds:
             image = image.crop(alpha_bounds)
+        image.thumbnail((1200, 500), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG", optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+@st.cache_data(show_spinner=False)
+def slug_overlay_preview_data_url(
+    path_value: str,
+    modified_ns: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> str:
+    """Keep the slug's transparent layout box so font size stays true in-editor."""
+    del modified_ns
+    from PIL import Image
+
+    with Image.open(path_value) as original:
+        image = original.convert("RGBA")
+        left = int(max(0.0, min(0.99, x)) * image.width)
+        top = int(max(0.0, min(0.99, y)) * image.height)
+        right = min(
+            image.width,
+            left + max(1, int(max(0.01, min(1.0, width)) * image.width)),
+        )
+        bottom = min(
+            image.height,
+            top + max(1, int(max(0.01, min(1.0, height)) * image.height)),
+        )
+        image = image.crop((left, top, right, bottom))
         image.thumbnail((1200, 500), Image.Resampling.LANCZOS)
         buffer = BytesIO()
         image.save(buffer, format="PNG", optimize=True)
@@ -7010,9 +7043,13 @@ def main() -> None:
                                 "kind": "slug",
                                 "text_only": slug_style == "Text only",
                                 "fit_mode": "contain_transparent",
-                                "src": transparent_overlay_preview_data_url(
+                                "src": slug_overlay_preview_data_url(
                                     str(slug_preview_path),
                                     slug_preview_path.stat().st_mtime_ns,
+                                    float(slug["geometry"]["x"]),
+                                    float(slug["geometry"]["y"]),
+                                    float(slug["geometry"]["w"]),
+                                    float(slug["geometry"]["h"]),
                                 ),
                                 "start": float(slug_start),
                                 "duration": float(slug_duration),

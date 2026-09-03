@@ -717,11 +717,18 @@
         const found = byId.get(String(image.id)) || defaults[index];
         const duration = clamp(Number(found.duration ?? image.duration) || 5, .1, videoDuration());
         const start = clamp(Number(found.start ?? image.start) || 0, 0, Math.max(0, videoDuration() - duration));
-        return {
+        const item = {
           id: String(image.id), x: clamp(Number(found.x) || 0, 0, .96), y: clamp(Number(found.y) || 0, 0, .96),
           w: clamp(Number(found.w) || .45, .08, 1), h: clamp(Number(found.h) || .45, .08, 1),
           z: Number(found.z) || index + 1, start, duration, locked:false
         };
+        if (image.lock_aspect) {
+          const mediaAspect = Math.max(.1, Number(image.aspect_ratio) || (16 / 9));
+          const normalisedRatio = mediaAspect / (16 / 9);
+          item.h = clamp(item.w / normalisedRatio, .08, 1 - item.y);
+          item.w = clamp(item.h * normalisedRatio, .08, 1 - item.x);
+        }
+        return item;
       });
     }
 
@@ -1190,6 +1197,22 @@
           }
           if (a.mode.includes("n")) {
             const bottom = a.y+a.h; a.item.y = clamp(a.y+dy,0,bottom-minSize); a.item.h = bottom-a.item.y;
+          }
+          const media = imageFor(a.item.id);
+          if (media?.lock_aspect) {
+            const mediaAspect = Math.max(.1, Number(media.aspect_ratio) || (16 / 9));
+            const normalisedRatio = mediaAspect / (16 / 9);
+            if ((a.mode.includes("n") || a.mode.includes("s")) && !a.mode.includes("e") && !a.mode.includes("w")) {
+              const centerX = a.item.x + a.item.w / 2;
+              a.item.w = clamp(a.item.h * normalisedRatio, minSize, 1);
+              a.item.x = clamp(centerX - a.item.w / 2, 0, 1 - a.item.w);
+            } else {
+              const bottom = a.item.y + a.item.h;
+              a.item.h = clamp(a.item.w / normalisedRatio, minSize, 1);
+              a.item.y = a.mode.includes("n")
+                ? clamp(bottom - a.item.h, 0, 1 - a.item.h)
+                : clamp(a.item.y, 0, 1 - a.item.h);
+            }
           }
         }
         const snap=.008;

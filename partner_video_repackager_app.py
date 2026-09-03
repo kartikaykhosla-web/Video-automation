@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.13"
+APP_BUILD_ID = "Editor-2026.09.03.14"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -3197,13 +3197,23 @@ def export_horizontal_video(
     )
 
     source_geometry = (template_geometry or {}).get("source", {})
+    source_meta = probe_video(source)
+    source_aspect_ratio = max(
+        0.1,
+        float(source_meta.get("width") or 16)
+        / max(1.0, float(source_meta.get("height") or 9)),
+    )
     if template_layout == "two_column":
         video_x = int(clamp_float(float(source_geometry.get("x", 0.0)), 0.0, 0.95) * OUTPUT_WIDTH)
         video_y = int(clamp_float(float(source_geometry.get("y", 0.20)), 0.0, 0.95) * OUTPUT_HEIGHT)
         video_width = int(clamp_float(float(source_geometry.get("w", 0.50)), 0.08, 1.0) * OUTPUT_WIDTH)
-        video_height = int(clamp_float(float(source_geometry.get("h", 0.80)), 0.08, 1.0) * OUTPUT_HEIGHT)
+        # The raw-video box is aspect locked. Its saved height is intentionally
+        # not used because a mismatched box must either crop or letterbox.
+        video_height = int(round(video_width / source_aspect_ratio))
         video_width = min(video_width, OUTPUT_WIDTH - video_x)
         video_height = min(video_height, OUTPUT_HEIGHT - video_y)
+        if video_height < round(video_width / source_aspect_ratio):
+            video_width = int(round(video_height * source_aspect_ratio))
         video_width -= video_width % 2
         video_height -= video_height % 2
     elif template_layout == "three_column":
@@ -5830,6 +5840,11 @@ def main() -> None:
                 "name": "Raw video",
                 "kind": "video",
                 "fit_mode": "contain",
+                "lock_aspect": True,
+                "aspect_ratio": (
+                    float(meta.get("width") or 16)
+                    / max(1.0, float(meta.get("height") or 9))
+                ),
                 "deletable": False,
                 "src": video_preview_data_url(
                     str(source_path), source_path.stat().st_mtime_ns

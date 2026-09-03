@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.16"
+APP_BUILD_ID = "Editor-2026.09.03.17"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -5003,6 +5003,11 @@ def main() -> None:
                     partner_script_voice_stage="Voiceover"
                 ),
             )
+        else:
+            st.caption(
+                "Optional: leave this blank when you want to retain the original "
+                "video audio, export silently, or upload a finished voiceover."
+            )
 
     with voice_slot:
         render_stage_header(
@@ -5024,14 +5029,12 @@ def main() -> None:
             index=0,
             key="partner_voice_choice",
             label_visibility="collapsed",
-            disabled=(
-                st.session_state.get("partner_script_voice_stage") != "Voiceover"
-                or not edited_transcript.strip()
-            ),
+            disabled=False,
         )
         if st.session_state.get("partner_script_voice_stage") != "Voiceover":
             st.info(
-                "Approve the transcript above to unlock voice selection and audio preview."
+                "Transcript and voiceover are optional. Choose no voiceover to "
+                "continue with the raw video's audio, or upload finished audio directly."
             )
 
         voiceover_upload = None
@@ -7491,12 +7494,24 @@ def main() -> None:
             for item in voice_pause_items
             )
         )
+        voice_requires_script = voice_choice in {
+            ELEVENLABS_VOICE_LABEL,
+            "Clone producer voice from sample",
+            "Hindi test voice (Veena)",
+            "English test voice (Samantha)",
+        }
+        script_ready_for_voice = bool(edited_transcript.strip())
         can_generate = (
-            bool(edited_transcript.strip())
+            (not voice_requires_script or script_ready_for_voice)
             and voice_ready
             and slug_ready
             and pause_inserts_ready
         )
+        if voice_requires_script and not script_ready_for_voice:
+            st.info(
+                "The selected text-to-speech voice needs a script. Choose "
+                "‘No voiceover’ or ‘Upload completed voiceover’ to publish without one."
+            )
         generate_button_label = "Generate 1920x1080 video"
         if voice_choice == ELEVENLABS_VOICE_LABEL:
             generate_button_label += f" with {selected_eleven_voice_label}"

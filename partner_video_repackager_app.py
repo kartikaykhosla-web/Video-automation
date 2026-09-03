@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.22"
+APP_BUILD_ID = "Editor-2026.09.03.23"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -4986,7 +4986,10 @@ def main() -> None:
             "Edit the raw video",
             "Edit directly on the canvas. Open a tool only when you need it.",
         )
-        video_canvas_slot = st.empty()
+        # Keep a stable block in the page tree. st.empty() clears its previous
+        # child at the beginning of every rerun, which made the large editor
+        # iframe visibly disappear while controls and previews were rebuilt.
+        video_canvas_slot = st.container()
         # These are persistent multi-element sections. Unlike st.empty(),
         # containers grow with their children, so Streamlit Cloud recalculates
         # the full document height and the page can scroll to the final control.
@@ -7019,24 +7022,35 @@ def main() -> None:
                 text_columns = slug_form.columns(
                     [0.72, 0.28], vertical_alignment="bottom"
                 )
-                rotation_text_value = text_columns[0].text_area(
-                    "Slug text(s) — one per line",
-                    value="\n".join(existing_text_entries),
-                    key=f"partner_slug_text_entries_{slug_id}",
-                    placeholder="First text\nSecond text\nThird text",
-                    help=(
-                        "In End to end mode, only the first non-empty line is used. "
-                        "In equal-duration mode, every non-empty line rotates in the "
-                        "same canvas position."
-                    ),
-                )
-                rotation_texts = [
-                    re.sub(r"\s+", " ", value).strip()
-                    for value in rotation_text_value.splitlines()
-                    if re.sub(r"\s+", " ", value).strip()
-                ]
                 if rotation_mode == "end_to_end":
-                    rotation_texts = rotation_texts[:1]
+                    single_text = text_columns[0].text_input(
+                        "Slug text",
+                        value=(
+                            existing_text_entries[0]
+                            if existing_text_entries
+                            else ""
+                        ),
+                        key=f"partner_slug_single_text_{slug_id}",
+                        placeholder="Enter the one text to show throughout the video",
+                        help="End-to-end mode accepts exactly one slug text.",
+                    )
+                    rotation_texts = [single_text.strip()] if single_text.strip() else []
+                else:
+                    rotation_text_value = text_columns[0].text_area(
+                        "Slug texts — one per line",
+                        value="\n".join(existing_text_entries),
+                        key=f"partner_slug_text_entries_{slug_id}",
+                        placeholder="First text\nSecond text\nThird text",
+                        help=(
+                            "Every non-empty line rotates in the same canvas position "
+                            "and receives an equal share of the video duration."
+                        ),
+                    )
+                    rotation_texts = [
+                        re.sub(r"\s+", " ", value).strip()
+                        for value in rotation_text_value.splitlines()
+                        if re.sub(r"\s+", " ", value).strip()
+                    ]
                 slug_text = rotation_texts[0] if rotation_texts else ""
                 slug_font_size = text_columns[1].number_input(
                     "Text size",
@@ -7284,7 +7298,7 @@ def main() -> None:
                         latest_voiceover_path.stat().st_mtime_ns,
                     )
 
-        with video_canvas_slot.container():
+        with video_canvas_slot:
             st.caption(
                 "Preview and arrange the video here. Use Remove sections or Keep "
                 "sections on the original-video bar below the canvas; multiple kept "

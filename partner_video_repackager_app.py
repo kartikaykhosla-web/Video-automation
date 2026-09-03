@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.24"
+APP_BUILD_ID = "Editor-2026.09.03.25"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -2722,30 +2722,44 @@ def slug_text_entries(slug: Dict[str, object]) -> List[str]:
 def expand_slug_text_timeline(
     slug: Dict[str, object], video_duration: float
 ) -> List[Dict[str, object]]:
-    """Expand one slug group into render-ready, non-overlapping text slots."""
+    """Expand one slug group into render-ready, non-overlapping text slots.
+
+    Without looping, all entries cover the edited video once and receive an
+    equal share of its duration. With looping enabled, entries repeat in order
+    using the configured per-text duration until the edited video ends.
+    """
     entries = slug_text_entries(slug)
     if not entries:
         return []
     duration = max(0.1, float(video_duration))
-    rotation_mode = str(slug.get("rotation_mode") or "end_to_end")
-    if rotation_mode != "equal_duration":
-        entries = entries[:1]
-    slot_duration = duration / len(entries)
+    loop_enabled = bool(slug.get("loop_enabled", False))
+    slot_duration = (
+        clamp_float(float(slug.get("text_duration") or 5.0), 0.1, duration)
+        if loop_enabled
+        else duration / len(entries)
+    )
     expanded: List[Dict[str, object]] = []
     group_id = str(slug.get("id") or "slug")
-    for entry_index, entry in enumerate(entries):
-        start = entry_index * slot_duration
-        end = duration if entry_index == len(entries) - 1 else start + slot_duration
+    slot_index = 0
+    while slot_index * slot_duration < duration - 0.001:
+        entry_index = slot_index % len(entries)
+        entry = entries[entry_index]
+        start = slot_index * slot_duration
+        end = min(duration, start + slot_duration)
         expanded.append(
             {
                 **slug,
-                "id": f"{group_id}:text:{entry_index}",
+                "id": f"{group_id}:slot:{slot_index}",
                 "group_id": group_id,
+                "text_index": entry_index,
                 "text": entry,
                 "start": start,
                 "duration": max(0.1, end - start),
             }
         )
+        slot_index += 1
+        if not loop_enabled and slot_index >= len(entries):
+            break
     return expanded
 
 
@@ -2757,7 +2771,8 @@ def add_partner_slug(video_duration: float) -> None:
             "id": time.time_ns(),
             "text": "",
             "text_entries": [],
-            "rotation_mode": "end_to_end",
+            "loop_enabled": False,
+            "text_duration": 5.0,
             "highlight_text": "",
             "label": "",
             "style": "Jagran Red",
@@ -6923,7 +6938,8 @@ def main() -> None:
                         "id": time.time_ns(),
                         "text": legacy_text,
                         "text_entries": [legacy_text],
-                        "rotation_mode": "end_to_end",
+                        "loop_enabled": False,
+                        "text_duration": 5.0,
                         "highlight_text": str(
                             st.session_state.get("partner_slug_highlight") or ""
                         ),
@@ -7000,57 +7016,36 @@ def main() -> None:
                     key=f"partner_slug_label_{slug_id}",
                     placeholder="NEWS UPDATE",
                 )
-                current_rotation_mode = str(
-                    slug.get("rotation_mode") or "end_to_end"
-                )
-                rotation_mode_label = slug_form.radio(
-                    "Slug text timing",
-                    ["End to end", "Divide into equal duration"],
-                    index=1 if current_rotation_mode == "equal_duration" else 0,
+                loop_enabled = slug_form.radio(
+                    "Slug text playback",
+                    [False, True],
+                    index=1 if bool(slug.get("loop_enabled", False)) else 0,
+                    format_func=lambda enabled: "Loop" if enabled else "No loop",
                     horizontal=True,
-                    key=f"partner_slug_rotation_mode_{slug_id}",
+                    key=f"partner_slug_loop_enabled_{slug_id}",
                     help=(
-                        "End to end displays one text for the complete edited video. "
-                        "Divide into equal duration rotates multiple texts in equal slots."
+                        "No loop plays every text once across the complete video. "
+                        "Loop repeats the texts using the duration set below."
                     ),
-                )
-                rotation_mode = (
-                    "equal_duration"
-                    if rotation_mode_label == "Divide into equal duration"
-                    else "end_to_end"
                 )
                 text_columns = slug_form.columns(
                     [0.72, 0.28], vertical_alignment="bottom"
                 )
-                if rotation_mode == "end_to_end":
-                    single_text = text_columns[0].text_input(
-                        "Slug text",
-                        value=(
-                            existing_text_entries[0]
-                            if existing_text_entries
-                            else ""
-                        ),
-                        key=f"partner_slug_single_text_{slug_id}",
-                        placeholder="Enter the one text to show throughout the video",
-                        help="End-to-end mode accepts exactly one slug text.",
-                    )
-                    rotation_texts = [single_text.strip()] if single_text.strip() else []
-                else:
-                    rotation_text_value = text_columns[0].text_area(
-                        "Slug texts — one per line",
-                        value="\n".join(existing_text_entries),
-                        key=f"partner_slug_text_entries_{slug_id}",
-                        placeholder="First text\nSecond text\nThird text",
-                        help=(
-                            "Every non-empty line rotates in the same canvas position "
-                            "and receives an equal share of the video duration."
-                        ),
-                    )
-                    rotation_texts = [
-                        re.sub(r"\s+", " ", value).strip()
-                        for value in rotation_text_value.splitlines()
-                        if re.sub(r"\s+", " ", value).strip()
-                    ]
+                rotation_text_value = text_columns[0].text_area(
+                    "Slug texts — one per line",
+                    value="\n".join(existing_text_entries),
+                    key=f"partner_slug_text_entries_{slug_id}",
+                    placeholder="First text\nSecond text\nThird text",
+                    help=(
+                        "One text remains visible end to end. Multiple texts either "
+                        "divide the video equally or repeat when Loop is selected."
+                    ),
+                )
+                rotation_texts = [
+                    re.sub(r"\s+", " ", value).strip()
+                    for value in rotation_text_value.splitlines()
+                    if re.sub(r"\s+", " ", value).strip()
+                ]
                 slug_text = rotation_texts[0] if rotation_texts else ""
                 slug_font_size = text_columns[1].number_input(
                     "Text size",
@@ -7080,16 +7075,37 @@ def main() -> None:
                         "and 15 for English headlines."
                     ),
                 )
-                if rotation_mode == "equal_duration" and rotation_texts:
+                text_duration = clamp_float(
+                    float(slug.get("text_duration") or 5.0),
+                    0.5,
+                    max(0.5, float(editor_video_duration)),
+                )
+                if loop_enabled:
+                    text_duration = slug_form.number_input(
+                        "Duration of each slug text (seconds)",
+                        min_value=0.5,
+                        max_value=max(0.5, float(editor_video_duration)),
+                        value=text_duration,
+                        step=0.5,
+                        key=f"partner_slug_text_duration_{slug_id}",
+                        help=(
+                            "Each text stays visible for this duration before the next "
+                            "text appears. The sequence repeats until the video ends."
+                        ),
+                    )
+                    slug_form.caption(
+                        f"Looping every {text_duration:.1f} seconds until the video ends."
+                    )
+                elif rotation_texts:
                     seconds_per_text = editor_video_duration / len(rotation_texts)
                     slug_form.caption(
                         f"{len(rotation_texts)} texts · {seconds_per_text:.2f} seconds "
-                        "each · rotating across the complete edited video"
+                        "each · played once across the complete edited video"
                     )
-                elif rotation_mode == "end_to_end":
+                else:
                     slug_form.caption(
-                        "This text remains visible from the beginning to the end of "
-                        "the edited video."
+                        "Add one text for an end-to-end slug, or multiple lines to "
+                        "divide the complete video equally."
                     )
                 slug_highlight = slug_form.text_input(
                     "Text to highlight (optional)",
@@ -7153,7 +7169,8 @@ def main() -> None:
                     {
                         "text": slug_text.strip(),
                         "text_entries": rotation_texts,
-                        "rotation_mode": rotation_mode,
+                        "loop_enabled": bool(loop_enabled),
+                        "text_duration": float(text_duration),
                         "highlight_text": slug_highlight.strip(),
                         "label": slug_label_text.strip(),
                         "style": slug_style,
@@ -7188,7 +7205,15 @@ def main() -> None:
                     slugs_for_export.extend(expanded_slug_items)
                     try:
                         preview_playlist: List[Dict[str, object]] = []
-                        for expanded_slug in expanded_slug_items:
+                        # The browser component loops its playlist natively. Keep
+                        # only one cycle there so a long video does not send dozens
+                        # of duplicate preview images back to the browser.
+                        preview_slug_items = (
+                            expanded_slug_items[: len(rotation_texts)]
+                            if loop_enabled
+                            else expanded_slug_items
+                        )
+                        for expanded_slug in preview_slug_items:
                             slug_preview_path = build_slug_overlay_asset(
                                 expanded_slug, source_path
                             )

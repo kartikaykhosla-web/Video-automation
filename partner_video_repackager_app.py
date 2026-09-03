@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.25"
+APP_BUILD_ID = "Editor-2026.09.03.26"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -6997,6 +6997,21 @@ def main() -> None:
                 f"Slug {slug_index + 1} · {timing_label} · {slug_label[:48]}",
                 expanded=not str(slug.get("text") or "").strip(),
             ):
+                loop_widget_key = f"partner_slug_loop_enabled_{slug_id}"
+                st.session_state.setdefault(
+                    loop_widget_key, bool(slug.get("loop_enabled", False))
+                )
+                loop_enabled = st.radio(
+                    "Slug text playback",
+                    [False, True],
+                    format_func=lambda enabled: "Loop" if enabled else "No loop",
+                    horizontal=True,
+                    key=loop_widget_key,
+                    help=(
+                        "No loop plays every text once across the complete video. "
+                        "Loop repeats the texts using the duration set below."
+                    ),
+                )
                 slug_form = st.form(
                     key=f"partner_slug_form_{slug_id}", border=False
                 )
@@ -7015,18 +7030,6 @@ def main() -> None:
                     value=str(slug.get("label") or ""),
                     key=f"partner_slug_label_{slug_id}",
                     placeholder="NEWS UPDATE",
-                )
-                loop_enabled = slug_form.radio(
-                    "Slug text playback",
-                    [False, True],
-                    index=1 if bool(slug.get("loop_enabled", False)) else 0,
-                    format_func=lambda enabled: "Loop" if enabled else "No loop",
-                    horizontal=True,
-                    key=f"partner_slug_loop_enabled_{slug_id}",
-                    help=(
-                        "No loop plays every text once across the complete video. "
-                        "Loop repeats the texts using the duration set below."
-                    ),
                 )
                 text_columns = slug_form.columns(
                     [0.72, 0.28], vertical_alignment="bottom"

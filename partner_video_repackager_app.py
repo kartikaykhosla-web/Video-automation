@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.12"
+APP_BUILD_ID = "Editor-2026.09.03.13"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -3212,18 +3212,14 @@ def export_horizontal_video(
     else:
         video_width, video_height = OUTPUT_WIDTH, OUTPUT_HEIGHT
         video_x, video_y = 0, 0
-    if template_layout in {"two_column", "three_column"}:
-        video_transform = (
-            f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
-            f"crop={video_width}:{video_height},"
-            f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:{video_x}:{video_y}:black,setsar=1"
-        )
-    else:
-        video_transform = (
-            f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
-            f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black,"
-            f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:{video_x}:{video_y}:black,setsar=1"
-        )
+    # Preserve the complete raw frame inside its freehand canvas box. Cropping
+    # a landscape source into a tall/narrow tile made interview text and faces
+    # appear to move outside the editor boundary.
+    video_transform = (
+        f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
+        f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black,"
+        f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:{video_x}:{video_y}:black,setsar=1"
+    )
     voiceover_duration = probe_media_duration(voiceover) if voiceover else 0.0
     voiceover_start = max(
         0.0, float((voice_timing or {}).get("start") or 0.0)
@@ -5833,6 +5829,7 @@ def main() -> None:
                 "id": "source",
                 "name": "Raw video",
                 "kind": "video",
+                "fit_mode": "contain",
                 "deletable": False,
                 "src": video_preview_data_url(
                     str(source_path), source_path.stat().st_mtime_ns

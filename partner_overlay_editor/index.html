@@ -878,7 +878,8 @@
       [...visible].sort((a,b) => a.z - b.z).forEach(item => {
         const image = imageFor(item.id); if (!image) return;
         const tile = document.createElement("div");
-        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${image.fit_mode === "contain_transparent" ? " contain-media" : ""}`;
+        const containsMedia = String(image.fit_mode || "").startsWith("contain");
+        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${containsMedia ? " contain-media" : ""}`;
         tile.dataset.id = String(item.id);
         Object.assign(tile.style, {left:`${item.x*100}%`, top:`${item.y*100}%`, width:`${item.w*100}%`, height:`${item.h*100}%`, zIndex:item.z});
         tile.innerHTML = `<img class="blur" draggable="false"><img class="sharp tile-image" draggable="false"><video class="sharp tile-video" muted playsinline preload="metadata"></video><button type="button" class="tile-play" title="Play video preview" aria-label="Play video preview">▶</button><span class="tile-name"></span><span class="media-kind"></span><span class="resize n" data-resize="n"></span><span class="resize ne" data-resize="ne"></span><span class="resize e" data-resize="e"></span><span class="resize se" data-resize="se"></span><span class="resize s" data-resize="s"></span><span class="resize sw" data-resize="sw"></span><span class="resize w" data-resize="w"></span><span class="resize nw" data-resize="nw"></span>`;

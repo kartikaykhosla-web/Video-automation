@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.14"
+APP_BUILD_ID = "Editor-2026.09.03.15"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -2846,7 +2846,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
         return font_value, lines
 
     requested_font_size = int(
-        clamp_float(float(slug.get("font_size") or 52), 8.0, 160.0)
+        clamp_float(float(slug.get("font_size") or 52), 4.0, 160.0)
     )
     font_size = requested_font_size
     font, lines = wrapped_words(font_size)
@@ -2855,7 +2855,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     line_gap = 13
     block_height = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
     available_text_height = max(40, bottom - text_top - 12)
-    while font_size > 8 and (
+    while font_size > 4 and (
         len(lines) > 2 or block_height > available_text_height
     ):
         font_size -= 2
@@ -6869,10 +6869,10 @@ def main() -> None:
                 )
                 slug_font_size = text_columns[1].number_input(
                     "Text size",
-                    min_value=8,
+                    min_value=4,
                     max_value=160,
                     value=int(
-                        clamp_float(float(slug.get("font_size") or 52), 8, 160)
+                        clamp_float(float(slug.get("font_size") or 52), 4, 160)
                     ),
                     step=1,
                     key=f"partner_slug_font_size_{slug_id}",
@@ -7009,6 +7009,7 @@ def main() -> None:
                                 "name": slug_label,
                                 "kind": "slug",
                                 "text_only": slug_style == "Text only",
+                                "fit_mode": "contain_transparent",
                                 "src": transparent_overlay_preview_data_url(
                                     str(slug_preview_path),
                                     slug_preview_path.stat().st_mtime_ns,

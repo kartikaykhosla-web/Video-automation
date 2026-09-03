@@ -715,8 +715,13 @@
       const defaults = defaultLayout(images);
       return images.map((image, index) => {
         const found = byId.get(String(image.id)) || defaults[index];
-        const duration = clamp(Number(found.duration ?? image.duration) || 5, .1, videoDuration());
-        const start = clamp(Number(found.start ?? image.start) || 0, 0, Math.max(0, videoDuration() - duration));
+        // Spatial-only canvas layers get their timing from the surrounding
+        // Streamlit controls. Do not let an older localStorage snapshot (for
+        // example a five-second initial clip) shorten a newly stitched source.
+        const timingStart = image.timing_locked ? image.start : (found.start ?? image.start);
+        const timingDuration = image.timing_locked ? image.duration : (found.duration ?? image.duration);
+        const duration = clamp(Number(timingDuration) || 5, .1, videoDuration());
+        const start = clamp(Number(timingStart) || 0, 0, Math.max(0, videoDuration() - duration));
         const item = {
           id: String(image.id), x: clamp(Number(found.x) || 0, 0, .96), y: clamp(Number(found.y) || 0, 0, .96),
           w: clamp(Number(found.w) || .45, .08, 1), h: clamp(Number(found.h) || .45, .08, 1),
@@ -1803,7 +1808,16 @@
       } else {
         const existingById=new Map(layout.map(item=>[String(item.id),item]));
         const incoming=normaliseIncoming(args.images||[],args.layout||[]);
-        layout=(args.images||[]).map(image=>existingById.get(String(image.id))||incoming.find(item=>String(item.id)===String(image.id)));
+        layout=(args.images||[]).map(image=>{
+          const existing=existingById.get(String(image.id));
+          const updated=incoming.find(item=>String(item.id)===String(image.id));
+          if (!existing) return updated;
+          // Keep freehand geometry and z-order, but refresh externally managed
+          // timing whenever cuts/kept ranges change the edited duration.
+          return image.timing_locked && updated
+            ? {...existing, start:updated.start, duration:updated.duration}
+            : existing;
+        });
       }
       if(!args.images.some(image=>String(image.id)===String(selectedId))) selectedId=args.images[0]?.id??null;
       renderAll();

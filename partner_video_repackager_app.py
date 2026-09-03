@@ -103,7 +103,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.20"
+APP_BUILD_ID = "Editor-2026.09.03.21"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -5933,6 +5933,7 @@ def main() -> None:
                 "id": "source",
                 "name": "Raw video",
                 "kind": "video",
+                "timing_locked": True,
                 "fit_mode": "contain",
                 "lock_aspect": True,
                 "aspect_ratio": (
@@ -5959,7 +5960,7 @@ def main() -> None:
         ):
             canvas_images.insert(
                 0,
-                {"id": "header_image", "name": "Top PNG", "kind": "image", "deletable": True, "fit_mode": "contain_transparent", "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": float(top_png_start), "duration": float(top_png_duration)},
+                {"id": "header_image", "name": "Top PNG", "kind": "image", "timing_locked": True, "deletable": True, "fit_mode": "contain_transparent", "src": image_preview_data_url(str(template_header_path_for_editor), template_header_path_for_editor.stat().st_mtime_ns), "start": float(top_png_start), "duration": float(top_png_duration)},
             )
         if template_loop_paths_for_editor:
             loop_preview_path = template_loop_paths_for_editor[0]
@@ -6038,6 +6039,7 @@ def main() -> None:
                     "id": "images",
                     "name": f"Floating media · {len(floating_playlist)} items",
                     "kind": str(first_floating["kind"]),
+                    "timing_locked": True,
                     "fit_mode": "contain_transparent",
                     "deletable": True,
                     "src": str(first_floating["src"]),
@@ -6050,7 +6052,7 @@ def main() -> None:
             )
         if selected_logo_path and "logo" not in hidden_template_components:
             canvas_images.append(
-                {"id": "logo", "name": f"{selected_property} logo", "kind": "image", "fit_mode": "contain_transparent", "deletable": True, "src": image_preview_data_url(str(selected_logo_path), selected_logo_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration}
+                {"id": "logo", "name": f"{selected_property} logo", "kind": "image", "timing_locked": True, "fit_mode": "contain_transparent", "deletable": True, "src": image_preview_data_url(str(selected_logo_path), selected_logo_path.stat().st_mtime_ns), "start": 0.0, "duration": editor_video_duration}
             )
         # The canvas is populated after the slug controls have been read so that
         # raw footage, floating media, logos and every slug share one editor.
@@ -7153,7 +7155,12 @@ def main() -> None:
         for slug_image, slug_layout in zip(slug_editor_images, slug_editor_layout):
             prefixed_slug_id = f"slug:{slug_image['id']}"
             unified_canvas_images.append(
-                {**slug_image, "id": prefixed_slug_id, "deletable": True}
+                {
+                    **slug_image,
+                    "id": prefixed_slug_id,
+                    "timing_locked": True,
+                    "deletable": True,
+                }
             )
             unified_canvas_layout.append(
                 {**slug_layout, "id": prefixed_slug_id}

@@ -104,7 +104,8 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.6"
+APP_BUILD_ID = "Editor-2026.09.08.7"
+NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -905,7 +906,7 @@ def window_template_frame_asset(template_label: str) -> Path:
     config = WINDOW_TEMPLATES[template_label]
     original_path = WINDOW_TEMPLATE_DIR / str(config["file"])
     digest = hashlib.sha256(
-        f"fixed-window-v3:{template_label}:{original_path.stat().st_mtime_ns}".encode()
+        f"fixed-window-v4:{template_label}:{original_path.stat().st_mtime_ns}".encode()
     ).hexdigest()[:16]
     output = OVERLAY_DIR / f"window_template_{digest}.png"
     if output.exists():
@@ -919,13 +920,34 @@ def window_template_frame_asset(template_label: str) -> Path:
         for left, top, right, bottom in config["slots"]:
             # Retain the fine outline supplied by the designer.
             draw.rectangle((left + 3, top + 3, right - 3, bottom - 3), fill=0)
-        # The name plate and slug strip live inside the media apertures, so put
-        # their original alpha back after punching out the windows.
-        for overlay_box_key in ("name_art_box", "slug_art_box"):
+        # The slug strip remains part of the permanent frame. The speaker/name
+        # plate is restored separately as a timed layer shortly before its text.
+        for overlay_box_key in ("slug_art_box",):
             overlay_box = tuple(config[overlay_box_key])
             alpha.paste(original_alpha.crop(overlay_box), overlay_box[:2])
         frame.putalpha(alpha)
         frame.save(output, format="PNG", optimize=True)
+    return output
+
+
+def window_template_name_plate_asset(template_label: str) -> Path:
+    """Return the template's transparent name-plate artwork as a timed layer."""
+    from PIL import Image
+
+    config = WINDOW_TEMPLATES[template_label]
+    original_path = WINDOW_TEMPLATE_DIR / str(config["file"])
+    plate_box = tuple(config["name_art_box"])
+    digest = hashlib.sha256(
+        f"timed-name-plate-v1:{template_label}:{original_path.stat().st_mtime_ns}".encode()
+    ).hexdigest()[:16]
+    output = OVERLAY_DIR / f"window_name_plate_{digest}.png"
+    if output.exists():
+        return output
+    ensure_dirs()
+    with Image.open(original_path) as original:
+        original.convert("RGBA").crop(plate_box).save(
+            output, format="PNG", optimize=True
+        )
     return output
 
 
@@ -6167,8 +6189,9 @@ def main() -> None:
         media_panel.divider()
         media_panel.markdown("**Speaker or location labels**")
         media_panel.caption(
-            "Each label uses the black name plate, lasts 7 seconds by default, "
-            "and can be repeated at another timestamp."
+            "Each label lasts 7 seconds by default and can be repeated at another "
+            "timestamp. Its black plate appears 0.3 seconds before the text and "
+            "both disappear together when the label duration ends."
         )
         name_cards = st.session_state.setdefault("partner_template_name_cards", [])
         media_panel.button(
@@ -7508,6 +7531,12 @@ def main() -> None:
         name_geometry = _normalised_box(
             tuple(selected_template_config["name_box"])
         )
+        name_art_geometry = _normalised_box(
+            tuple(selected_template_config["name_art_box"])
+        )
+        name_plate_path = window_template_name_plate_asset(
+            selected_template_label
+        )
         for name_index, name_card in enumerate(
             st.session_state.get("partner_template_name_cards", [])
         ):
@@ -7523,6 +7552,49 @@ def main() -> None:
                 0.1,
                 max(0.1, editor_video_duration - name_start),
             )
+            name_end = min(editor_video_duration, name_start + name_duration)
+            plate_start = max(0.0, name_start - NAME_PLATE_LEAD_SECONDS)
+            plate_duration = max(0.1, name_end - plate_start)
+            plate_id = f"template_name_plate:{name_card['id']}"
+            plate_z = 60 + name_index * 2
+            name_z = plate_z + 1
+            plate_overlay = {
+                "id": plate_id,
+                "path": str(name_plate_path),
+                "media_type": "image",
+                "fit_mode": "contain_transparent",
+                "start": plate_start,
+                "duration": plate_duration,
+                **name_art_geometry,
+                "z": plate_z,
+            }
+            image_overlays_for_export.append(plate_overlay)
+            name_editor_images.append(
+                {
+                    "id": plate_id,
+                    "name": "Name/location plate",
+                    "kind": "image",
+                    "timing_locked": True,
+                    "position_locked": True,
+                    "decorative": True,
+                    "deletable": False,
+                    "fit_mode": "contain_transparent",
+                    "src": image_preview_data_url(
+                        str(name_plate_path), name_plate_path.stat().st_mtime_ns
+                    ),
+                    "start": plate_start,
+                    "duration": plate_duration,
+                }
+            )
+            name_editor_layout.append(
+                {
+                    "id": plate_id,
+                    **name_art_geometry,
+                    "z": plate_z,
+                    "start": plate_start,
+                    "duration": plate_duration,
+                }
+            )
             name_overlay = {
                 "id": name_id,
                 "path": str(name_asset),
@@ -7531,7 +7603,7 @@ def main() -> None:
                 "start": name_start,
                 "duration": name_duration,
                 **name_geometry,
-                "z": 60 + name_index,
+                "z": name_z,
             }
             image_overlays_for_export.append(name_overlay)
             name_editor_images.append(
@@ -7554,7 +7626,7 @@ def main() -> None:
                 {
                     "id": name_id,
                     **name_geometry,
-                    "z": 60 + name_index,
+                    "z": name_z,
                     "start": name_start,
                     "duration": name_duration,
                 }

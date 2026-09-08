@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.4"
+APP_BUILD_ID = "Editor-2026.09.08.6"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -323,7 +323,7 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 overlay_layout_editor = components.declare_component(
-    "partner_overlay_timeline_editor_v3",
+    "partner_overlay_timeline_editor_v4",
     path=str(OVERLAY_EDITOR_DIR),
 )
 
@@ -7803,7 +7803,7 @@ def main() -> None:
                         slug_editor_images.append(
                             {
                                 "id": slug_id,
-                                "name": slug_label,
+                                "name": slug_text.strip() or slug_label,
                                 "kind": "slug",
                                 "text_only": slug_style == "Text only",
                                 "fit_mode": "contain_transparent",
@@ -7936,7 +7936,8 @@ def main() -> None:
                     f"{selected_property}:"
                     f"{st.session_state.get('partner_template_header_upload_generation', 0)}:"
                     f"{st.session_state.get('partner_template_loop_upload_generation', 0)}:"
-                    f"{st.session_state.get('partner_template_canvas_generation', 0)}"
+                    f"{st.session_state.get('partner_template_canvas_generation', 0)}:"
+                    "fixed-text-regions-v2"
                 ),
                 default={"items": unified_canvas_layout},
                 key=(

@@ -685,9 +685,18 @@
 
     function normaliseIncoming(images, incoming) {
       const byId = new Map((incoming || []).map(item => [String(item.id), item]));
+      const requestedById = new Map((args.layout || []).map(
+        item => [String(item.id), item]
+      ));
       const defaults = defaultLayout(images);
       return images.map((image, index) => {
-        const found = byId.get(String(image.id)) || defaults[index];
+        // Template-owned layers must always use the coordinates supplied by
+        // Python. Older durable browser layouts may contain the same ids from
+        // before the fixed name plate / yellow slug band were introduced.
+        // Letting those snapshots win places text back in the default grid.
+        const found = image.position_locked
+          ? requestedById.get(String(image.id)) || byId.get(String(image.id)) || defaults[index]
+          : byId.get(String(image.id)) || defaults[index];
         // Spatial-only canvas layers get their timing from the surrounding
         // Streamlit controls. Do not let an older localStorage snapshot (for
         // example a five-second initial clip) shorten a newly stitched source.

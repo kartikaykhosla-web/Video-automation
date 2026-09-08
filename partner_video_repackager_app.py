@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.8"
+APP_BUILD_ID = "Editor-2026.09.08.9"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -2945,9 +2945,9 @@ def add_partner_slug(video_duration: float) -> None:
             "background_color": "#000000",
             "background_end_color": "#000000",
             "highlight_color": "#000000",
-            "text_color": "#111111",
+            "text_color": "#151515",
             "font_name": DEFAULT_HINDI_SLUG_FONT,
-            "font_size": 52,
+            "font_size": 80,
             "start": 0.0,
             "duration": max(0.1, float(video_duration)),
             "geometry": {
@@ -2998,7 +2998,9 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     font_name = str(slug.get("font_name") or default_font_name)
     if font_name not in PUBLISHER_SLUG_FONTS:
         font_name = default_font_name
-    text_color = str(slug.get("text_color") or preset["text"])
+    text_color = str(
+        slug.get("text_color") or ("#151515" if text_only else preset["text"])
+    )
     highlight_text_color = str(preset["highlight_text"])
     label_text_color = str(preset["label_text"])
     cache_payload = json.dumps(
@@ -3013,9 +3015,9 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "text_color": text_color,
             "region": region,
             "geometry": geometry,
-            "font_size": int(slug.get("font_size") or 52),
+            "font_size": int(slug.get("font_size") or 80),
             "font_name": font_name,
-            "design_version": 10,
+            "design_version": 11,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3147,7 +3149,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
         return font_value, lines
 
     requested_font_size = int(
-        clamp_float(float(slug.get("font_size") or 52), 4.0, 160.0)
+        clamp_float(float(slug.get("font_size") or 80), 4.0, 160.0)
     )
     font_size = requested_font_size
     font, lines = wrapped_words(font_size)
@@ -3175,7 +3177,10 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     y = text_top + max(0, (bottom - text_top - block_height) / 2) - sample_bbox[1]
     space_width = draw.textlength(" ", font=font)
     for line in lines:
-        x = text_left
+        line_width = sum(
+            draw.textlength(word, font=font) for word, _ in line
+        ) + space_width * max(0, len(line) - 1)
+        x = text_left + max(0.0, (max_text_width - line_width) / 2)
         for word_index, (word, highlighted_word) in enumerate(line):
             if word_index:
                 x += space_width
@@ -4909,11 +4914,23 @@ def main() -> None:
     if not ffmpeg_ok:
         st.warning("FFmpeg is currently unavailable. Upload, preview, and transcription will still work, but final video export requires repairing FFmpeg.")
 
+    publish_source_value = st.session_state.get("partner_video_path")
+    publish_source_ready = bool(
+        publish_source_value and Path(str(publish_source_value)).is_file()
+    )
+    publish_requested = st.button(
+        "Publish video",
+        icon=":material/movie:",
+        type="primary",
+        disabled=not publish_source_ready,
+        key="partner_publish_video_shortcut",
+    )
     workspace_tabs = st.tabs(
         [
             "Editor",
             "Publish",
-        ]
+        ],
+        default="Publish" if publish_requested else None,
     )
 
     with workspace_tabs[0]:
@@ -5854,41 +5871,6 @@ def main() -> None:
                     + 1
                 )
                 st.rerun()
-
-        voice_workspace_ready = bool(
-            voice_choice == "No voiceover — use original video audio"
-            or
-            st.session_state.get("partner_eleven_preview_bytes")
-            or st.session_state.get("partner_audio_preview_bytes")
-            or (uploaded_voiceover and uploaded_voiceover.exists())
-            or voice_choice
-            in {"Hindi test voice (Veena)", "English test voice (Samantha)"}
-        )
-        st.divider()
-        if st.button(
-            "Continue to Publish →",
-            type="primary",
-            width="stretch",
-            disabled=not voice_workspace_ready,
-            key="partner_continue_to_timeline",
-            help=(
-                None
-                if voice_workspace_ready
-                else "Generate, upload, or skip the voiceover before continuing."
-            ),
-        ):
-            components.html(
-                """
-                <script>
-                const tabs = window.parent.document.querySelectorAll('[role="tab"]');
-                const publishTab = Array.from(tabs).find(
-                    (tab) => tab.textContent.trim() === 'Publish'
-                );
-                if (publishTab) publishTab.click();
-                </script>
-                """,
-                height=0,
-            )
 
         voice_workspace.__exit__(None, None, None)
 
@@ -7659,10 +7641,10 @@ def main() -> None:
                         "label": "",
                         "style": "Text only",
                         "background_color": "#000000",
-                        "text_color": "#111111",
+                        "text_color": "#151515",
                         "font_name": DEFAULT_HINDI_SLUG_FONT,
                         "highlight_color": "#000000",
-                        "font_size": 52,
+                        "font_size": 80,
                         "start": float(
                             st.session_state.get("partner_slug_start") or 0.0
                         ),
@@ -7748,7 +7730,7 @@ def main() -> None:
                     min_value=4,
                     max_value=160,
                     value=int(
-                        clamp_float(float(slug.get("font_size") or 52), 4, 160)
+                        clamp_float(float(slug.get("font_size") or 80), 4, 160)
                     ),
                     step=1,
                     key=f"partner_slug_font_size_{slug_id}",
@@ -7820,7 +7802,7 @@ def main() -> None:
                         "background_color": "#000000",
                         "background_end_color": "#000000",
                         "highlight_color": "#000000",
-                        "text_color": "#111111",
+                        "text_color": "#151515",
                         "font_size": int(slug_font_size),
                         "font_name": slug_font_name,
                         "start": 0.0,
@@ -8361,7 +8343,7 @@ def main() -> None:
         if st.button(
             generate_button_label,
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=not can_generate,
         ):
             voiceover_path = uploaded_voiceover if voice_choice == "Upload completed voiceover" else None

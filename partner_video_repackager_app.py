@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.10"
+APP_BUILD_ID = "Editor-2026.09.08.11"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -224,6 +224,9 @@ def choose_window_template(template_label: str) -> None:
     if template_label not in WINDOW_TEMPLATES:
         return
     st.session_state["partner_window_template"] = template_label
+    st.session_state["partner_active_video_window"] = "1"
+    st.session_state.pop("partner_window_media_target", None)
+    st.session_state.pop("partner_window_media_action", None)
     st.session_state.pop("partner_template_canvas_layout", None)
     st.session_state["partner_template_canvas_generation"] = (
         int(st.session_state.get("partner_template_canvas_generation", 0)) + 1
@@ -233,6 +236,60 @@ def choose_window_template(template_label: str) -> None:
 def request_publish_workspace() -> None:
     """Open the Publish tab on the rerun triggered by a shortcut button."""
     st.session_state["partner_open_publish_workspace"] = True
+
+
+def select_window_media_target(
+    template_label: str, slot_number: int, action: str = "add"
+) -> None:
+    """Open the compact media picker for one fixed template window."""
+    st.session_state["partner_window_media_target"] = (
+        f"{template_label}:{slot_number}"
+    )
+    st.session_state["partner_window_media_action"] = action
+    st.session_state["partner_active_video_window"] = str(slot_number)
+
+
+def select_active_video_window(slot_number: int) -> None:
+    """Switch the visible trim controls to the requested template window."""
+    st.session_state["partner_active_video_window"] = str(slot_number)
+
+
+def clear_window_media(template_label: str, slot_number: int) -> None:
+    """Remove every playlist item assigned to one optional template window."""
+    all_items = st.session_state.setdefault("partner_window_slot_items", {})
+    template_items = all_items.setdefault(template_label, {})
+    template_items[str(slot_number)] = []
+    st.session_state.pop(
+        f"partner_window_signature_{template_label}_{slot_number}", None
+    )
+    if st.session_state.get("partner_window_media_target") == (
+        f"{template_label}:{slot_number}"
+    ):
+        st.session_state.pop("partner_window_media_target", None)
+        st.session_state.pop("partner_window_media_action", None)
+    st.session_state["partner_template_canvas_generation"] = (
+        int(st.session_state.get("partner_template_canvas_generation", 0)) + 1
+    )
+
+
+def fixed_window_media_item(path: Path, name: str) -> Dict[str, object]:
+    """Create the common stored representation for uploaded/provider slot media."""
+    media_type = (
+        "video"
+        if path.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+        else "image"
+    )
+    clip_duration = probe_media_duration(path) if media_type == "video" else 0.0
+    return {
+        "id": uuid.uuid4().hex,
+        "path": str(path),
+        "name": name,
+        "media_type": media_type,
+        "clip_duration": clip_duration,
+        "trim_mode": "keep",
+        "ranges": [(0.0, clip_duration)] if media_type == "video" else [],
+        "use_clip_audio": False,
+    }
 
 # A deliberately limited newsroom set: 15 Devanagari-first families for Hindi
 # publishing and 15 editorial/headline families for English publishing. Files
@@ -5239,6 +5296,7 @@ def main() -> None:
         # These are persistent multi-element sections. Unlike st.empty(),
         # containers grow with their children, so Streamlit Cloud recalculates
         # the full document height and the page can scroll to the final control.
+        window_assignment_slot = st.container()
         editor_controls_slot = st.container()
         transcript_slot = st.container()
         voice_slot = st.container()
@@ -5879,6 +5937,373 @@ def main() -> None:
             on_click=request_publish_workspace,
         )
 
+    with window_assignment_slot:
+        all_window_slot_items = st.session_state.setdefault(
+            "partner_window_slot_items", {}
+        )
+        template_slot_store = all_window_slot_items.setdefault(
+            selected_template_label, {}
+        )
+        selected_slots = list(selected_template_config["slots"])
+        st.session_state.setdefault("partner_active_video_window", "1")
+
+        if len(selected_slots) > 1:
+            with st.container(border=True):
+                st.markdown("**Template windows**")
+                st.caption(
+                    "The primary video is fixed in the left window. Add a local, "
+                    "Reuters or ANI video—or an image—to any remaining window."
+                )
+                slot_columns = st.columns(len(selected_slots))
+                primary_active = (
+                    str(st.session_state.get("partner_active_video_window")) == "1"
+                )
+                with slot_columns[0].container(border=True, height="stretch"):
+                    st.caption("WINDOW 1 · LEFT")
+                    st.markdown(
+                        f"**{'Editing · ' if primary_active else ''}Primary video**"
+                    )
+                    st.caption(source_path.name)
+                    st.button(
+                        "Edit primary video",
+                        icon=":material/movie_edit:",
+                        width="stretch",
+                        type="primary" if primary_active else "secondary",
+                        key=f"partner_edit_primary_{selected_template_label}",
+                        on_click=select_active_video_window,
+                        args=(1,),
+                    )
+
+                for slot_number in range(2, len(selected_slots) + 1):
+                    slot_key = str(slot_number)
+                    slot_items = [
+                        item
+                        for item in template_slot_store.get(slot_key, [])
+                        if Path(str(item.get("path") or "")).is_file()
+                    ]
+                    template_slot_store[slot_key] = slot_items
+                    is_active = (
+                        str(st.session_state.get("partner_active_video_window"))
+                        == slot_key
+                    )
+                    with slot_columns[slot_number - 1].container(
+                        border=True, height="stretch"
+                    ):
+                        st.caption(f"WINDOW {slot_number}")
+                        if slot_items:
+                            item_names = [str(item.get("name") or "Media") for item in slot_items]
+                            st.markdown(
+                                f"**{'Editing · ' if is_active else ''}"
+                                f"{len(slot_items)} media item"
+                                f"{'s' if len(slot_items) != 1 else ''}**"
+                            )
+                            st.caption(" · ".join(item_names[:2]))
+                            if any(item.get("media_type") == "video" for item in slot_items):
+                                st.button(
+                                    "Edit video",
+                                    icon=":material/movie_edit:",
+                                    width="stretch",
+                                    type="primary" if is_active else "secondary",
+                                    key=f"partner_edit_window_{selected_template_label}_{slot_number}",
+                                    on_click=select_active_video_window,
+                                    args=(slot_number,),
+                                )
+                            action_columns = st.columns(3)
+                            action_columns[0].button(
+                                "Add",
+                                icon=":material/add:",
+                                key=f"partner_add_window_{selected_template_label}_{slot_number}",
+                                on_click=select_window_media_target,
+                                args=(selected_template_label, slot_number, "add"),
+                            )
+                            action_columns[1].button(
+                                "Replace",
+                                icon=":material/swap_horiz:",
+                                key=f"partner_replace_window_{selected_template_label}_{slot_number}",
+                                on_click=select_window_media_target,
+                                args=(selected_template_label, slot_number, "replace"),
+                            )
+                            action_columns[2].button(
+                                "Clear",
+                                icon=":material/delete:",
+                                key=f"partner_clear_window_{selected_template_label}_{slot_number}",
+                                on_click=clear_window_media,
+                                args=(selected_template_label, slot_number),
+                            )
+                        else:
+                            st.markdown("**Empty frame**")
+                            st.caption("Choose what should appear in this window.")
+                            st.button(
+                                "Add media",
+                                icon=":material/add_photo_alternate:",
+                                type="primary",
+                                width="stretch",
+                                key=f"partner_add_empty_window_{selected_template_label}_{slot_number}",
+                                on_click=select_window_media_target,
+                                args=(selected_template_label, slot_number, "add"),
+                            )
+
+                target_value = str(
+                    st.session_state.get("partner_window_media_target") or ""
+                )
+                expected_prefix = f"{selected_template_label}:"
+                if target_value.startswith(expected_prefix):
+                    target_slot = int(target_value.rsplit(":", 1)[1])
+                    target_action = str(
+                        st.session_state.get("partner_window_media_action") or "add"
+                    )
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**{'Replace' if target_action == 'replace' else 'Add media to'} "
+                            f"window {target_slot}**"
+                        )
+                        media_source = st.segmented_control(
+                            "Media source",
+                            ["Upload", "Reuters", "ANI"],
+                            default="Upload",
+                            key=(
+                                f"partner_window_source_{selected_template_label}_"
+                                f"{target_slot}_{target_action}"
+                            ),
+                        )
+                        if media_source == "Upload":
+                            slot_uploads = st.file_uploader(
+                                "Upload videos or images",
+                                type=[
+                                    "png", "jpg", "jpeg", "webp", "mp4", "mov",
+                                    "m4v", "webm", "mkv",
+                                ],
+                                accept_multiple_files=True,
+                                key=(
+                                    f"partner_direct_window_upload_{selected_template_label}_"
+                                    f"{target_slot}_{target_action}"
+                                ),
+                                help="Multiple files play in the order selected.",
+                            )
+                            upload_signature = tuple(
+                                f"{item.name}:{item.size}" for item in (slot_uploads or [])
+                            )
+                            signature_key = (
+                                f"partner_window_signature_{selected_template_label}_"
+                                f"{target_slot}"
+                            )
+                            action_signature = (target_action, upload_signature)
+                            if upload_signature and st.session_state.get(signature_key) != action_signature:
+                                imported_items = []
+                                for position, uploaded_media in enumerate(slot_uploads or []):
+                                    saved_media = save_overlay_upload(
+                                        uploaded_media,
+                                        time.time_ns() + target_slot * 100 + position,
+                                    )
+                                    imported_items.append(
+                                        fixed_window_media_item(
+                                            saved_media, uploaded_media.name
+                                        )
+                                    )
+                                if target_action == "replace":
+                                    template_slot_store[str(target_slot)] = imported_items
+                                else:
+                                    template_slot_store.setdefault(
+                                        str(target_slot), []
+                                    ).extend(imported_items)
+                                st.session_state[signature_key] = action_signature
+                                st.session_state.pop("partner_window_media_target", None)
+                                st.session_state.pop("partner_window_media_action", None)
+                                st.session_state["partner_active_video_window"] = str(target_slot)
+                                st.rerun()
+                        else:
+                            provider = str(media_source)
+                            provider_config = newsroom_video_api_config(provider)
+                            provider_ready = newsroom_provider_configured(
+                                provider, provider_config
+                            )
+                            search_key = (
+                                f"partner_window_{provider.lower()}_{selected_template_label}_"
+                                f"{target_slot}"
+                            )
+                            search_columns = st.columns(
+                                [0.78, 0.22], vertical_alignment="bottom"
+                            )
+                            provider_query = search_columns[0].text_input(
+                                f"Search {provider} videos",
+                                key=f"{search_key}_query",
+                                placeholder="Search by topic, location or slug",
+                            )
+                            if search_columns[1].button(
+                                "Search",
+                                width="stretch",
+                                key=f"{search_key}_search",
+                                disabled=not (provider_ready and provider_query.strip()),
+                            ):
+                                with st.spinner(f"Searching your {provider} entitlement..."):
+                                    results, search_message = search_newsroom_videos(
+                                        provider, provider_query.strip()
+                                    )
+                                st.session_state[f"{search_key}_results"] = results
+                                st.session_state[f"{search_key}_message"] = search_message
+                            if not provider_ready:
+                                st.info(
+                                    f"{provider} credentials are not configured on this server."
+                                )
+                            provider_message = st.session_state.get(
+                                f"{search_key}_message"
+                            )
+                            if provider_message:
+                                st.caption(str(provider_message))
+                            provider_results = list(
+                                st.session_state.get(f"{search_key}_results", [])
+                            )
+                            if provider_results:
+                                result_labels = {
+                                    f"{item.get('title') or provider + ' video'}"
+                                    f" · {item.get('usn') or item.get('id') or index + 1}": item
+                                    for index, item in enumerate(provider_results)
+                                }
+                                chosen_result_label = st.selectbox(
+                                    f"Choose a {provider} video",
+                                    list(result_labels),
+                                    key=f"{search_key}_selected",
+                                )
+                                if st.button(
+                                    "Import into this window",
+                                    icon=":material/download:",
+                                    type="primary",
+                                    key=f"{search_key}_import",
+                                ):
+                                    with st.spinner(
+                                        f"Importing the licensed {provider} video..."
+                                    ):
+                                        imported_path, import_message = (
+                                            download_newsroom_video(
+                                                result_labels[chosen_result_label]
+                                            )
+                                        )
+                                    if imported_path:
+                                        imported_item = fixed_window_media_item(
+                                            imported_path,
+                                            str(
+                                                result_labels[chosen_result_label].get(
+                                                    "title"
+                                                )
+                                                or imported_path.name
+                                            ),
+                                        )
+                                        if target_action == "replace":
+                                            template_slot_store[str(target_slot)] = [
+                                                imported_item
+                                            ]
+                                        else:
+                                            template_slot_store.setdefault(
+                                                str(target_slot), []
+                                            ).append(imported_item)
+                                        st.session_state.pop(
+                                            "partner_window_media_target", None
+                                        )
+                                        st.session_state.pop(
+                                            "partner_window_media_action", None
+                                        )
+                                        st.session_state[
+                                            "partner_active_video_window"
+                                        ] = str(target_slot)
+                                        st.rerun()
+                                    st.error(import_message)
+
+                active_window = str(
+                    st.session_state.get("partner_active_video_window") or "1"
+                )
+                if active_window == "1":
+                    st.caption(
+                        "Editing window 1 · Use Adjust or Timeline below for the primary video."
+                    )
+                elif active_window.isdigit():
+                    active_slot_number = int(active_window)
+                    active_slot_videos = [
+                        item
+                        for item in template_slot_store.get(active_window, [])
+                        if item.get("media_type") == "video"
+                        and Path(str(item.get("path") or "")).is_file()
+                    ]
+                    if active_slot_videos:
+                        st.markdown(f"**Edit window {active_slot_number} video**")
+                        video_choices = {
+                            str(item.get("name") or f"Video {index + 1}"): item
+                            for index, item in enumerate(active_slot_videos)
+                        }
+                        selected_secondary_label = st.selectbox(
+                            "Video to edit",
+                            list(video_choices),
+                            key=(
+                                f"partner_secondary_editor_{selected_template_label}_"
+                                f"{active_slot_number}"
+                            ),
+                        )
+                        selected_secondary = video_choices[selected_secondary_label]
+                        secondary_duration = max(
+                            0.1,
+                            float(selected_secondary.get("clip_duration") or 0.1),
+                        )
+                        trim_mode_label = st.segmented_control(
+                            "Edit mode",
+                            ["Keep sections", "Remove sections"],
+                            default=(
+                                "Remove sections"
+                                if selected_secondary.get("trim_mode") == "remove"
+                                else "Keep sections"
+                            ),
+                            key=f"partner_secondary_mode_{selected_secondary['id']}",
+                        )
+                        selected_secondary["trim_mode"] = (
+                            "remove"
+                            if trim_mode_label == "Remove sections"
+                            else "keep"
+                        )
+                        new_range = st.slider(
+                            "Section from → to",
+                            0.0,
+                            float(secondary_duration),
+                            (0.0, min(float(secondary_duration), 5.0)),
+                            0.1,
+                            key=f"partner_secondary_range_{selected_secondary['id']}",
+                        )
+                        if st.button(
+                            f"Add {trim_mode_label.lower()}",
+                            key=f"partner_secondary_add_range_{selected_secondary['id']}",
+                        ):
+                            ranges = list(selected_secondary.get("ranges") or [])
+                            if selected_secondary.get("trim_mode") == "keep" and ranges == [
+                                (0.0, secondary_duration)
+                            ]:
+                                ranges = []
+                            ranges.append((float(new_range[0]), float(new_range[1])))
+                            selected_secondary["ranges"] = ranges
+                        for range_index, (range_start, range_end) in enumerate(
+                            list(selected_secondary.get("ranges") or [])
+                        ):
+                            range_columns = st.columns([0.84, 0.16])
+                            range_columns[0].caption(
+                                f"{range_index + 1}. {compact_time(range_start)}–"
+                                f"{compact_time(range_end)}"
+                            )
+                            if range_columns[1].button(
+                                "Remove",
+                                key=(
+                                    f"partner_secondary_remove_"
+                                    f"{selected_secondary['id']}_{range_index}"
+                                ),
+                            ):
+                                selected_secondary["ranges"] = [
+                                    value
+                                    for index, value in enumerate(
+                                        selected_secondary.get("ranges") or []
+                                    )
+                                    if index != range_index
+                                ]
+                        selected_secondary["use_clip_audio"] = st.toggle(
+                            "Use this clip's audio",
+                            value=bool(selected_secondary.get("use_clip_audio")),
+                            key=f"partner_secondary_audio_{selected_secondary['id']}",
+                        )
+
     with editor_controls_slot:
         template_layout = "fixed_window"
         st.button(
@@ -6046,140 +6471,6 @@ def main() -> None:
             step=0.5,
             key="partner_template_photo_seconds",
         )
-
-        media_panel.divider()
-        media_panel.markdown("**Fixed template windows**")
-        media_panel.caption(
-            "Window 1 contains the primary video. Add photos or editable videos "
-            "to the remaining windows; each window plays its files in order."
-        )
-        all_window_slot_items = st.session_state.setdefault(
-            "partner_window_slot_items", {}
-        )
-        template_slot_store = all_window_slot_items.setdefault(
-            selected_template_label, {}
-        )
-        selected_slots = list(selected_template_config["slots"])
-        for slot_number in range(2, len(selected_slots) + 1):
-            slot_key = str(slot_number)
-            slot_uploads = media_panel.file_uploader(
-                f"Window {slot_number} media",
-                type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "m4v", "webm", "mkv"],
-                accept_multiple_files=True,
-                key=f"partner_window_upload_{selected_template_label}_{slot_number}",
-                help="Photos and videos play in the order selected.",
-            )
-            slot_signature = tuple(
-                f"{upload.name}:{upload.size}" for upload in (slot_uploads or [])
-            )
-            signature_key = f"partner_window_signature_{selected_template_label}_{slot_number}"
-            if slot_signature and st.session_state.get(signature_key) != slot_signature:
-                saved_slot_items = []
-                for position, uploaded_media in enumerate(slot_uploads or []):
-                    saved_media = save_overlay_upload(
-                        uploaded_media, time.time_ns() + slot_number * 100 + position
-                    )
-                    media_type = (
-                        "video"
-                        if saved_media.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
-                        else "image"
-                    )
-                    clip_duration = (
-                        probe_media_duration(saved_media) if media_type == "video" else 0.0
-                    )
-                    saved_slot_items.append(
-                        {
-                            "id": uuid.uuid4().hex,
-                            "path": str(saved_media),
-                            "name": uploaded_media.name,
-                            "media_type": media_type,
-                            "clip_duration": clip_duration,
-                            "trim_mode": "keep",
-                            "ranges": [(0.0, clip_duration)] if media_type == "video" else [],
-                            "use_clip_audio": False,
-                        }
-                    )
-                template_slot_store[slot_key] = saved_slot_items
-                st.session_state[signature_key] = slot_signature
-
-        secondary_videos = [
-            (slot_number, item)
-            for slot_number in range(2, len(selected_slots) + 1)
-            for item in template_slot_store.get(str(slot_number), [])
-            if item.get("media_type") == "video"
-            and Path(str(item.get("path") or "")).is_file()
-        ]
-        if secondary_videos:
-            media_panel.markdown("**Edit a secondary video**")
-            video_choices = {
-                f"Window {slot_number} · {item.get('name')}": (slot_number, item)
-                for slot_number, item in secondary_videos
-            }
-            selected_secondary_label = media_panel.selectbox(
-                "Video to edit",
-                list(video_choices),
-                key=f"partner_secondary_editor_{selected_template_label}",
-            )
-            selected_slot_number, selected_secondary = video_choices[
-                selected_secondary_label
-            ]
-            secondary_duration = max(
-                0.1, float(selected_secondary.get("clip_duration") or 0.1)
-            )
-            trim_mode_label = media_panel.segmented_control(
-                "Edit mode",
-                ["Keep sections", "Remove sections"],
-                default=(
-                    "Remove sections"
-                    if selected_secondary.get("trim_mode") == "remove"
-                    else "Keep sections"
-                ),
-                key=f"partner_secondary_mode_{selected_secondary['id']}",
-            )
-            selected_secondary["trim_mode"] = (
-                "remove" if trim_mode_label == "Remove sections" else "keep"
-            )
-            new_range = media_panel.slider(
-                "Section from → to",
-                0.0,
-                float(secondary_duration),
-                (0.0, min(float(secondary_duration), 5.0)),
-                0.1,
-                key=f"partner_secondary_range_{selected_secondary['id']}",
-            )
-            if media_panel.button(
-                f"Add {trim_mode_label.lower()}",
-                key=f"partner_secondary_add_range_{selected_secondary['id']}",
-            ):
-                ranges = list(selected_secondary.get("ranges") or [])
-                # The initial full-length keep is a default, not a second range.
-                if selected_secondary.get("trim_mode") == "keep" and ranges == [
-                    (0.0, secondary_duration)
-                ]:
-                    ranges = []
-                ranges.append((float(new_range[0]), float(new_range[1])))
-                selected_secondary["ranges"] = ranges
-            for range_index, (range_start, range_end) in enumerate(
-                list(selected_secondary.get("ranges") or [])
-            ):
-                range_columns = media_panel.columns([0.84, 0.16])
-                range_columns[0].caption(
-                    f"{range_index + 1}. {compact_time(range_start)}–{compact_time(range_end)}"
-                )
-                if range_columns[1].button(
-                    "Remove",
-                    key=f"partner_secondary_remove_{selected_secondary['id']}_{range_index}",
-                ):
-                    selected_secondary["ranges"] = [
-                        value
-                        for index, value in enumerate(selected_secondary.get("ranges") or [])
-                        if index != range_index
-                    ]
-            selected_secondary["use_clip_audio"] = media_panel.toggle(
-                "Use this clip's audio",
-                value=bool(selected_secondary.get("use_clip_audio")),
-                key=f"partner_secondary_audio_{selected_secondary['id']}",
-            )
 
         media_panel.divider()
         media_panel.markdown("**Speaker or location labels**")

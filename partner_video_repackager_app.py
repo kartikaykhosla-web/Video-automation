@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.1"
+APP_BUILD_ID = "Editor-2026.09.08.2"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -169,7 +169,7 @@ WINDOW_TEMPLATES: Dict[str, Dict[str, object]] = {
     "One window": {
         "file": "window-1.png",
         "slots": [(28, 29, 1892, 1053)],
-        "name_box": (124, 840, 614, 904),
+        "name_box": (164, 840, 614, 904),
         "name_art_box": (35, 810, 620, 930),
         "slug_box": (397, 936, 1519, 1047),
         "slug_art_box": (365, 928, 1552, 1055),
@@ -177,7 +177,7 @@ WINDOW_TEMPLATES: Dict[str, Dict[str, object]] = {
     "Two equal windows": {
         "file": "window-2.png",
         "slots": [(28, 29, 951, 1053), (966, 29, 1892, 1053)],
-        "name_box": (124, 840, 614, 904),
+        "name_box": (164, 840, 614, 904),
         "name_art_box": (35, 810, 620, 930),
         "slug_box": (397, 936, 1519, 1047),
         "slug_art_box": (365, 928, 1552, 1055),
@@ -185,7 +185,7 @@ WINDOW_TEMPLATES: Dict[str, Dict[str, object]] = {
     "Three equal windows": {
         "file": "window-3.png",
         "slots": [(28, 29, 639, 1053), (655, 29, 1264, 1053), (1281, 29, 1892, 1053)],
-        "name_box": (124, 840, 614, 904),
+        "name_box": (164, 840, 614, 904),
         "name_art_box": (35, 810, 620, 930),
         "slug_box": (397, 936, 1519, 1047),
         "slug_art_box": (365, 928, 1552, 1055),
@@ -193,7 +193,7 @@ WINDOW_TEMPLATES: Dict[str, Dict[str, object]] = {
     "30 / 70 windows": {
         "file": "window-30-70.png",
         "slots": [(27, 31, 695, 1051), (714, 31, 1890, 1051)],
-        "name_box": (124, 840, 614, 904),
+        "name_box": (164, 840, 614, 904),
         "name_art_box": (35, 810, 620, 930),
         "slug_box": (749, 936, 1853, 1047),
         "slug_art_box": (714, 928, 1885, 1055),
@@ -926,13 +926,13 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
     font_size = int(clamp_float(float(card.get("font_size") or 34), 12, 64))
     font_name = str(card.get("font_name") or DEFAULT_ENGLISH_SLUG_FONT)
     text_color = str(card.get("text_color") or "#FFFFFF")
-    payload = f"name-card-v2:{text_value}:{font_size}:{font_name}:{text_color}"
+    payload = f"name-card-v3:{text_value}:{font_size}:{font_name}:{text_color}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     output = OVERLAY_DIR / f"{source.stem}_name_card_{digest}.png"
     if output.exists():
         return output
     ensure_dirs()
-    image = Image.new("RGBA", (490, 64), (0, 0, 0, 0))
+    image = Image.new("RGBA", (450, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     font = _overlay_font(text_value, font_size, font_name)
     # Keep a small safe margin from the icon and the plate edges.

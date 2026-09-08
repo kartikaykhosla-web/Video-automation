@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.2"
+APP_BUILD_ID = "Editor-2026.09.08.4"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -217,6 +217,17 @@ def selected_window_template() -> Tuple[str, Dict[str, object]]:
         label = "One window"
     return label, WINDOW_TEMPLATES[label]
 
+
+def choose_window_template(template_label: str) -> None:
+    """Apply a template in one click and discard geometry from the old frame."""
+    if template_label not in WINDOW_TEMPLATES:
+        return
+    st.session_state["partner_window_template"] = template_label
+    st.session_state.pop("partner_template_canvas_layout", None)
+    st.session_state["partner_template_canvas_generation"] = (
+        int(st.session_state.get("partner_template_canvas_generation", 0)) + 1
+    )
+
 # A deliberately limited newsroom set: 15 Devanagari-first families for Hindi
 # publishing and 15 editorial/headline families for English publishing. Files
 # are bundled so the canvas preview and Cloud Run export cannot diverge due to
@@ -312,7 +323,7 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 overlay_layout_editor = components.declare_component(
-    "partner_overlay_timeline_editor",
+    "partner_overlay_timeline_editor_v3",
     path=str(OVERLAY_EDITOR_DIR),
 )
 
@@ -2908,11 +2919,11 @@ def add_partner_slug(video_duration: float) -> None:
             "text_duration": 5.0,
             "highlight_text": "",
             "label": "",
-            "style": "Jagran Red",
-            "background_color": SLUG_STYLE_PRESETS["Jagran Red"]["background"],
-            "background_end_color": SLUG_STYLE_PRESETS["Jagran Red"]["background_end"],
-            "highlight_color": SLUG_STYLE_PRESETS["Jagran Red"]["accent"],
-            "text_color": SLUG_STYLE_PRESETS["Jagran Red"]["text"],
+            "style": "Text only",
+            "background_color": "#000000",
+            "background_end_color": "#000000",
+            "highlight_color": "#000000",
+            "text_color": "#111111",
             "font_name": DEFAULT_HINDI_SLUG_FONT,
             "font_size": 52,
             "start": 0.0,
@@ -5163,14 +5174,20 @@ def main() -> None:
         ):
             template_asset = WINDOW_TEMPLATE_DIR / str(template_config["file"])
             preview_column.image(str(template_asset), width="stretch")
-            preview_column.caption(template_name)
-        st.segmented_control(
-            "Template",
-            list(WINDOW_TEMPLATES),
-            default="One window",
-            key="partner_window_template",
-            width="stretch",
-        )
+            is_selected_template = (
+                str(st.session_state.get("partner_window_template") or "One window")
+                == template_name
+            )
+            preview_column.button(
+                f":material/check: {template_name}"
+                if is_selected_template
+                else template_name,
+                type="primary" if is_selected_template else "secondary",
+                width="stretch",
+                key=f"partner_choose_template_{template_name}",
+                on_click=choose_window_template,
+                args=(template_name,),
+            )
         selected_template_label, selected_template_config = selected_window_template()
 
         # Reserve the visual order before populating each part later in the run.
@@ -5186,11 +5203,17 @@ def main() -> None:
         # These are persistent multi-element sections. Unlike st.empty(),
         # containers grow with their children, so Streamlit Cloud recalculates
         # the full document height and the page can scroll to the final control.
+        editor_controls_slot = st.container()
         transcript_slot = st.container()
         voice_slot = st.container()
-        editor_controls_slot = st.container()
 
     with transcript_slot:
+        transcript_workspace = st.expander(
+            "Workflow stages 3–4 · Script and transcript (optional)",
+            icon=":material/description:",
+            expanded=False,
+        )
+        transcript_workspace.__enter__()
         st.session_state.setdefault("partner_script_voice_stage", "Transcript")
         st.segmented_control(
             "Script and voice step",
@@ -5299,7 +5322,15 @@ def main() -> None:
                 "video audio, export silently, or upload a finished voiceover."
             )
 
+        transcript_workspace.__exit__(None, None, None)
+
     with voice_slot:
+        voice_workspace = st.expander(
+            "Workflow stage 5 · Voiceover and audio (optional)",
+            icon=":material/graphic_eq:",
+            expanded=False,
+        )
+        voice_workspace.__enter__()
         render_stage_header(
             5,
             "Direct the voice",
@@ -5837,8 +5868,14 @@ def main() -> None:
                 height=0,
             )
 
+        voice_workspace.__exit__(None, None, None)
+
     with editor_controls_slot:
         template_layout = "fixed_window"
+        # Reserve the two most-used tools directly below the canvas even though
+        # their data is assembled later in this run.
+        media_branding_slot = st.container()
+        slug_controls_slot = st.container()
         latest_editor_preview = Path(
             str(st.session_state.get("partner_latest_preview") or "")
         )
@@ -5909,7 +5946,7 @@ def main() -> None:
             "start": float(raw_audio_start),
             "end": float(raw_audio_end),
         }
-        media_panel = st.expander(
+        media_panel = media_branding_slot.expander(
             "Media and branding",
             icon=":material/add_photo_alternate:",
             expanded=False,
@@ -6143,7 +6180,7 @@ def main() -> None:
         for card_index, card in enumerate(name_cards):
             with media_panel.expander(
                 f"Label {card_index + 1} · {card.get('text') or 'Untitled'}",
-                expanded=not bool(card.get("text")),
+                expanded=False,
             ):
                 card["text"] = st.text_input(
                     "Name or location",
@@ -7057,7 +7094,7 @@ def main() -> None:
                     item["clip_duration"] = clip_duration
                     with st.expander(
                         f"🎬 {item.get('name') or clip_path.name}",
-                        expanded=len(video_items) == 1,
+                        expanded=False,
                     ):
                         has_clip_audio = media_has_audio(
                             str(clip_path), clip_path.stat().st_mtime_ns
@@ -7523,11 +7560,16 @@ def main() -> None:
                 }
             )
 
-        st.divider()
-        st.markdown("**Top-strip slugs**")
+        slug_controls_slot.__enter__()
+        slug_panel = st.expander(
+            "Slug text",
+            icon=":material/subtitles:",
+            expanded=False,
+        )
+        slug_panel.__enter__()
+        st.markdown("**Yellow-band slug text**")
         st.caption(
-            "Add multiple text bars to the right side of the top strip. Each slug has its own wording, "
-            "highlight, colours, start time and duration."
+            "Add one or more headlines to the template's fixed yellow band."
         )
         if "partner_slug_overlays" not in st.session_state:
             legacy_text = str(st.session_state.get("partner_slug_text") or "").strip()
@@ -7543,16 +7585,11 @@ def main() -> None:
                             st.session_state.get("partner_slug_highlight") or ""
                         ),
                         "label": "",
-                        "style": "Jagran Red",
-                        "background_color": str(
-                            st.session_state.get("partner_slug_background") or "#8F0711"
-                        ),
-                        "text_color": SLUG_STYLE_PRESETS["Jagran Red"]["text"],
+                        "style": "Text only",
+                        "background_color": "#000000",
+                        "text_color": "#111111",
                         "font_name": DEFAULT_HINDI_SLUG_FONT,
-                        "highlight_color": str(
-                            st.session_state.get("partner_slug_highlight_colour")
-                            or "#F6D35D"
-                        ),
+                        "highlight_color": "#000000",
                         "font_size": 52,
                         "start": float(
                             st.session_state.get("partner_slug_start") or 0.0
@@ -7594,7 +7631,7 @@ def main() -> None:
             timing_label = f"0:00–{compact_time(editor_video_duration)}"
             with st.expander(
                 f"Slug {slug_index + 1} · {timing_label} · {slug_label[:48]}",
-                expanded=not str(slug.get("text") or "").strip(),
+                expanded=False,
             ):
                 loop_widget_key = f"partner_slug_loop_enabled_{slug_id}"
                 st.session_state.setdefault(
@@ -7614,22 +7651,7 @@ def main() -> None:
                 slug_form = st.form(
                     key=f"partner_slug_form_{slug_id}", border=False
                 )
-                style_columns = slug_form.columns([0.56, 0.44])
-                current_style = str(slug.get("style") or "Jagran Red")
-                if current_style not in SLUG_STYLE_PRESETS:
-                    current_style = "Jagran Red"
-                slug_style = style_columns[0].selectbox(
-                    "Lower-third design",
-                    list(SLUG_STYLE_PRESETS),
-                    index=list(SLUG_STYLE_PRESETS).index(current_style),
-                    key=f"partner_slug_style_{slug_id}",
-                )
-                slug_label_text = style_columns[1].text_input(
-                    "Category label (optional)",
-                    value=str(slug.get("label") or ""),
-                    key=f"partner_slug_label_{slug_id}",
-                    placeholder="NEWS UPDATE",
-                )
+                slug_style = "Text only"
                 text_columns = slug_form.columns(
                     [0.72, 0.28], vertical_alignment="bottom"
                 )
@@ -7709,59 +7731,6 @@ def main() -> None:
                         "Add one text for an end-to-end slug, or multiple lines to "
                         "divide the complete video equally."
                     )
-                slug_highlight = slug_form.text_input(
-                    "Text to highlight (optional)",
-                    value=str(slug.get("highlight_text") or ""),
-                    key=f"partner_slug_highlight_{slug_id}",
-                    placeholder="Exact word or phrase from this slug",
-                    help=(
-                        "The first matching word or phrase uses the selected "
-                        "highlight colour."
-                    ),
-                )
-                selected_preset = SLUG_STYLE_PRESETS[slug_style]
-                if slug_style == "Custom":
-                    colour_columns = slug_form.columns(3)
-                    slug_background = colour_columns[0].color_picker(
-                        "Panel colour",
-                        value=str(
-                            slug.get("background_color")
-                            or selected_preset["background"]
-                        ),
-                        key=f"partner_slug_background_{slug_id}",
-                    )
-                    slug_highlight_colour = colour_columns[1].color_picker(
-                        "Accent colour",
-                        value=str(
-                            slug.get("highlight_color") or selected_preset["accent"]
-                        ),
-                        key=f"partner_slug_highlight_colour_{slug_id}",
-                    )
-                    slug_text_colour = colour_columns[2].color_picker(
-                        "Font colour",
-                        value=str(
-                            slug.get("text_color") or selected_preset["text"]
-                        ),
-                        key=f"partner_slug_text_colour_{slug_id}",
-                        help="Sets the text colour without adding an outline or border.",
-                    )
-                    slug_background_end = slug_background
-                else:
-                    slug_background = selected_preset["background"]
-                    slug_background_end = selected_preset["background_end"]
-                    slug_highlight_colour = selected_preset["accent"]
-                    slug_text_colour = slug_form.color_picker(
-                        "Font colour",
-                        value=str(
-                            slug.get("text_color") or selected_preset["text"]
-                        ),
-                        key=f"partner_slug_text_colour_{slug_id}",
-                        help="Sets the text colour without adding an outline or border.",
-                    )
-                    slug_form.caption(
-                        "The preset supplies the panel and accent colours. Font "
-                        "colour can be changed independently."
-                    )
                 slug_form.form_submit_button(
                     "Apply slug changes",
                     type="primary",
@@ -7773,13 +7742,13 @@ def main() -> None:
                         "text_entries": rotation_texts,
                         "loop_enabled": bool(loop_enabled),
                         "text_duration": float(text_duration),
-                        "highlight_text": slug_highlight.strip(),
-                        "label": slug_label_text.strip(),
-                        "style": slug_style,
-                        "background_color": slug_background,
-                        "background_end_color": slug_background_end,
-                        "highlight_color": slug_highlight_colour,
-                        "text_color": slug_text_colour,
+                        "highlight_text": "",
+                        "label": "",
+                        "style": "Text only",
+                        "background_color": "#000000",
+                        "background_end_color": "#000000",
+                        "highlight_color": "#000000",
+                        "text_color": "#111111",
                         "font_size": int(slug_font_size),
                         "font_name": slug_font_name,
                         "start": 0.0,
@@ -7867,6 +7836,8 @@ def main() -> None:
                 )
 
         st.session_state["partner_slug_overlays"] = slug_items
+        slug_panel.__exit__(None, None, None)
+        slug_controls_slot.__exit__(None, None, None)
 
         # Slugs are regular layers in the one and only video canvas. Prefixing
         # their ids keeps them distinct from the template's fixed components.

@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.9"
+APP_BUILD_ID = "Editor-2026.09.08.10"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -228,6 +228,11 @@ def choose_window_template(template_label: str) -> None:
     st.session_state["partner_template_canvas_generation"] = (
         int(st.session_state.get("partner_template_canvas_generation", 0)) + 1
     )
+
+
+def request_publish_workspace() -> None:
+    """Open the Publish tab on the rerun triggered by a shortcut button."""
+    st.session_state["partner_open_publish_workspace"] = True
 
 # A deliberately limited newsroom set: 15 Devanagari-first families for Hindi
 # publishing and 15 editorial/headline families for English publishing. Files
@@ -4914,16 +4919,8 @@ def main() -> None:
     if not ffmpeg_ok:
         st.warning("FFmpeg is currently unavailable. Upload, preview, and transcription will still work, but final video export requires repairing FFmpeg.")
 
-    publish_source_value = st.session_state.get("partner_video_path")
-    publish_source_ready = bool(
-        publish_source_value and Path(str(publish_source_value)).is_file()
-    )
-    publish_requested = st.button(
-        "Publish video",
-        icon=":material/movie:",
-        type="primary",
-        disabled=not publish_source_ready,
-        key="partner_publish_video_shortcut",
+    publish_requested = bool(
+        st.session_state.pop("partner_open_publish_workspace", False)
     )
     workspace_tabs = st.tabs(
         [
@@ -5873,9 +5870,25 @@ def main() -> None:
                 st.rerun()
 
         voice_workspace.__exit__(None, None, None)
+        st.button(
+            "Publish video",
+            icon=":material/movie:",
+            type="primary",
+            width="stretch",
+            key="partner_publish_video_at_end",
+            on_click=request_publish_workspace,
+        )
 
     with editor_controls_slot:
         template_layout = "fixed_window"
+        st.button(
+            "Publish video",
+            icon=":material/movie:",
+            type="primary",
+            width="stretch",
+            key="partner_publish_video_below_canvas",
+            on_click=request_publish_workspace,
+        )
         # Reserve the two most-used tools directly below the canvas even though
         # their data is assembled later in this run.
         media_branding_slot = st.container()

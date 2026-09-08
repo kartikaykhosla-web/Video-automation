@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.7"
+APP_BUILD_ID = "Editor-2026.09.08.8"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -959,7 +959,7 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
     font_size = int(clamp_float(float(card.get("font_size") or 34), 12, 64))
     font_name = str(card.get("font_name") or DEFAULT_ENGLISH_SLUG_FONT)
     text_color = str(card.get("text_color") or "#FFFFFF")
-    payload = f"name-card-v3:{text_value}:{font_size}:{font_name}:{text_color}"
+    payload = f"name-card-v4:{text_value}:{font_size}:{font_name}:{text_color}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     output = OVERLAY_DIR / f"{source.stem}_name_card_{digest}.png"
     if output.exists():
@@ -969,7 +969,7 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
     draw = ImageDraw.Draw(image)
     font = _overlay_font(text_value, font_size, font_name)
     # Keep a small safe margin from the icon and the plate edges.
-    draw.text((12, 32), text_value, font=font, fill=text_color, anchor="lm")
+    draw.text((12, 29), text_value, font=font, fill=text_color, anchor="lm")
     image.save(output, format="PNG", optimize=True)
     return output
 

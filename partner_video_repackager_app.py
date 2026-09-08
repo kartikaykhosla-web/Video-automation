@@ -42,6 +42,7 @@ OVERLAY_DIR = WORK_DIR / "overlays"
 OVERLAY_EDITOR_DIR = APP_DIR / "partner_overlay_editor"
 PROPERTY_LOGO_DIR = APP_DIR / "partner_property_logos"
 PUBLISHER_FONT_DIR = APP_DIR / "partner_fonts"
+WINDOW_TEMPLATE_DIR = APP_DIR / "partner_window_templates"
 VERTEX_SERVICE_ACCOUNT_CANDIDATES = (
     APP_DIR.parent / "service_account_vertex.json",
     APP_DIR / "service_account_vertex.json",
@@ -103,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.03.26"
+APP_BUILD_ID = "Editor-2026.09.08.1"
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
     "Priya": {
@@ -160,6 +161,61 @@ DEFAULT_DELIVERY_PROFILE: Dict[str, object] = {
 
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
+
+# Fixed 1920x1080 broadcast templates. Coordinates describe the actual white
+# media apertures in the supplied artwork; users may crop/position media inside
+# a slot, but the slot itself never moves.
+WINDOW_TEMPLATES: Dict[str, Dict[str, object]] = {
+    "One window": {
+        "file": "window-1.png",
+        "slots": [(28, 29, 1892, 1053)],
+        "name_box": (124, 840, 614, 904),
+        "name_art_box": (35, 810, 620, 930),
+        "slug_box": (397, 936, 1519, 1047),
+        "slug_art_box": (365, 928, 1552, 1055),
+    },
+    "Two equal windows": {
+        "file": "window-2.png",
+        "slots": [(28, 29, 951, 1053), (966, 29, 1892, 1053)],
+        "name_box": (124, 840, 614, 904),
+        "name_art_box": (35, 810, 620, 930),
+        "slug_box": (397, 936, 1519, 1047),
+        "slug_art_box": (365, 928, 1552, 1055),
+    },
+    "Three equal windows": {
+        "file": "window-3.png",
+        "slots": [(28, 29, 639, 1053), (655, 29, 1264, 1053), (1281, 29, 1892, 1053)],
+        "name_box": (124, 840, 614, 904),
+        "name_art_box": (35, 810, 620, 930),
+        "slug_box": (397, 936, 1519, 1047),
+        "slug_art_box": (365, 928, 1552, 1055),
+    },
+    "30 / 70 windows": {
+        "file": "window-30-70.png",
+        "slots": [(27, 31, 695, 1051), (714, 31, 1890, 1051)],
+        "name_box": (124, 840, 614, 904),
+        "name_art_box": (35, 810, 620, 930),
+        "slug_box": (749, 936, 1853, 1047),
+        "slug_art_box": (714, 928, 1885, 1055),
+    },
+}
+
+
+def _normalised_box(box: Tuple[int, int, int, int]) -> Dict[str, float]:
+    left, top, right, bottom = box
+    return {
+        "x": left / OUTPUT_WIDTH,
+        "y": top / OUTPUT_HEIGHT,
+        "w": (right - left) / OUTPUT_WIDTH,
+        "h": (bottom - top) / OUTPUT_HEIGHT,
+    }
+
+
+def selected_window_template() -> Tuple[str, Dict[str, object]]:
+    label = str(st.session_state.get("partner_window_template") or "One window")
+    if label not in WINDOW_TEMPLATES:
+        label = "One window"
+    return label, WINDOW_TEMPLATES[label]
 
 # A deliberately limited newsroom set: 15 Devanagari-first families for Hindi
 # publishing and 15 editorial/headline families for English publishing. Files
@@ -829,6 +885,83 @@ def image_preview_data_url(path_value: str, modified_ns: int) -> str:
         image.save(buffer, format="PNG", optimize=True)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def window_template_frame_asset(template_label: str) -> Path:
+    """Return the supplied artwork with only its media apertures punched out."""
+    from PIL import Image, ImageDraw
+
+    config = WINDOW_TEMPLATES[template_label]
+    original_path = WINDOW_TEMPLATE_DIR / str(config["file"])
+    digest = hashlib.sha256(
+        f"fixed-window-v3:{template_label}:{original_path.stat().st_mtime_ns}".encode()
+    ).hexdigest()[:16]
+    output = OVERLAY_DIR / f"window_template_{digest}.png"
+    if output.exists():
+        return output
+    ensure_dirs()
+    with Image.open(original_path) as original:
+        frame = original.convert("RGBA")
+        original_alpha = frame.getchannel("A")
+        alpha = original_alpha.copy()
+        draw = ImageDraw.Draw(alpha)
+        for left, top, right, bottom in config["slots"]:
+            # Retain the fine outline supplied by the designer.
+            draw.rectangle((left + 3, top + 3, right - 3, bottom - 3), fill=0)
+        # The name plate and slug strip live inside the media apertures, so put
+        # their original alpha back after punching out the windows.
+        for overlay_box_key in ("name_art_box", "slug_art_box"):
+            overlay_box = tuple(config[overlay_box_key])
+            alpha.paste(original_alpha.crop(overlay_box), overlay_box[:2])
+        frame.putalpha(alpha)
+        frame.save(output, format="PNG", optimize=True)
+    return output
+
+
+def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
+    """Render one timed speaker/location label for the template name plate."""
+    from PIL import Image, ImageDraw
+
+    text_value = re.sub(r"\s+", " ", str(card.get("text") or "")).strip()
+    font_size = int(clamp_float(float(card.get("font_size") or 34), 12, 64))
+    font_name = str(card.get("font_name") or DEFAULT_ENGLISH_SLUG_FONT)
+    text_color = str(card.get("text_color") or "#FFFFFF")
+    payload = f"name-card-v2:{text_value}:{font_size}:{font_name}:{text_color}"
+    digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+    output = OVERLAY_DIR / f"{source.stem}_name_card_{digest}.png"
+    if output.exists():
+        return output
+    ensure_dirs()
+    image = Image.new("RGBA", (490, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    font = _overlay_font(text_value, font_size, font_name)
+    # Keep a small safe margin from the icon and the plate edges.
+    draw.text((12, 32), text_value, font=font, fill=text_color, anchor="lm")
+    image.save(output, format="PNG", optimize=True)
+    return output
+
+
+def add_template_name_card(video_duration: float) -> None:
+    cards = st.session_state.setdefault("partner_template_name_cards", [])
+    cards.append(
+        {
+            "id": uuid.uuid4().hex,
+            "text": "",
+            "start": 0.0,
+            "duration": min(7.0, max(0.1, float(video_duration))),
+            "font_size": 34,
+            "font_name": DEFAULT_ENGLISH_SLUG_FONT,
+            "text_color": "#FFFFFF",
+        }
+    )
+
+
+def remove_template_name_card(card_id: str) -> None:
+    st.session_state["partner_template_name_cards"] = [
+        card
+        for card in st.session_state.get("partner_template_name_cards", [])
+        if str(card.get("id")) != str(card_id)
+    ]
 
 
 @st.cache_data(show_spinner=False)
@@ -2814,7 +2947,9 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     label = re.sub(r"\s+", " ", str(slug.get("label") or "")).strip()
     style_name = str(slug.get("style") or "Jagran Red")
     preset = SLUG_STYLE_PRESETS.get(style_name, SLUG_STYLE_PRESETS["Jagran Red"])
-    text_only = style_name == "Text only"
+    # Fixed window templates already contain the yellow slug plate. Preserve
+    # the selected typography/highlight settings while rendering no second box.
+    text_only = style_name == "Text only" or bool(slug.get("transparent_surface"))
     background = str(slug.get("background_color") or preset["background"])
     background_end = str(
         slug.get("background_end_color") or preset["background_end"]
@@ -2865,7 +3000,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             output.unlink(missing_ok=True)
 
     canvas = Image.new("RGBA", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
-    if region == "template_header":
+    if region in {"template_header", "fixed_template_strip"}:
         geometry_x = clamp_float(float(geometry.get("x") or 0.01), 0.0, 0.95)
         geometry_y = clamp_float(float(geometry.get("y") or 0.01), 0.0, 0.95)
         geometry_w = clamp_float(float(geometry.get("w") or 0.98), 0.12, 1.0)
@@ -3336,7 +3471,16 @@ def export_horizontal_video(
         float(source_meta.get("width") or 16)
         / max(1.0, float(source_meta.get("height") or 9)),
     )
-    if template_layout == "two_column":
+    if template_layout == "fixed_window":
+        video_x = int(clamp_float(float(source_geometry.get("x", 0.0)), 0.0, 0.95) * OUTPUT_WIDTH)
+        video_y = int(clamp_float(float(source_geometry.get("y", 0.0)), 0.0, 0.95) * OUTPUT_HEIGHT)
+        video_width = int(clamp_float(float(source_geometry.get("w", 1.0)), 0.08, 1.0) * OUTPUT_WIDTH)
+        video_height = int(clamp_float(float(source_geometry.get("h", 1.0)), 0.08, 1.0) * OUTPUT_HEIGHT)
+        video_width = max(80, min(video_width, OUTPUT_WIDTH - video_x))
+        video_height = max(80, min(video_height, OUTPUT_HEIGHT - video_y))
+        video_width -= video_width % 2
+        video_height -= video_height % 2
+    elif template_layout == "two_column":
         video_x = int(clamp_float(float(source_geometry.get("x", 0.0)), 0.0, 0.95) * OUTPUT_WIDTH)
         video_y = int(clamp_float(float(source_geometry.get("y", 0.20)), 0.0, 0.95) * OUTPUT_HEIGHT)
         video_width = int(clamp_float(float(source_geometry.get("w", 0.50)), 0.08, 1.0) * OUTPUT_WIDTH)
@@ -3358,11 +3502,18 @@ def export_horizontal_video(
     # Preserve the complete raw frame inside its freehand canvas box. Cropping
     # a landscape source into a tall/narrow tile made interview text and faces
     # appear to move outside the editor boundary.
-    video_transform = (
-        f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
-        f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black,"
-        f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:{video_x}:{video_y}:black,setsar=1"
-    )
+    if template_layout == "fixed_window":
+        video_transform = (
+            f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
+            f"crop={video_width}:{video_height},"
+            f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:{video_x}:{video_y}:black,setsar=1"
+        )
+    else:
+        video_transform = (
+            f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
+            f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black,"
+            f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:{video_x}:{video_y}:black,setsar=1"
+        )
     voiceover_duration = probe_media_duration(voiceover) if voiceover else 0.0
     voiceover_start = max(
         0.0, float((voice_timing or {}).get("start") or 0.0)
@@ -4924,6 +5075,9 @@ def main() -> None:
                                     "partner_timeline_audio_start",
                                     "partner_timeline_audio_volume",
                                     "partner_timeline_audio_mode",
+                                    "partner_window_slot_items",
+                                    "partner_template_name_cards",
+                                    "partner_template_canvas_layout",
                                 ):
                                     st.session_state.pop(dependent_key, None)
                                 st.success(import_message)
@@ -4965,6 +5119,9 @@ def main() -> None:
                 st.session_state.pop("partner_timeline_audio_start", None)
                 st.session_state.pop("partner_timeline_audio_volume", None)
                 st.session_state.pop("partner_timeline_audio_mode", None)
+                st.session_state.pop("partner_window_slot_items", None)
+                st.session_state.pop("partner_template_name_cards", None)
+                st.session_state.pop("partner_template_canvas_layout", None)
                 st.success(f"Uploaded: {source_path.name}")
             elif st.session_state.get("partner_video_path"):
                 source_path = Path(st.session_state["partner_video_path"])
@@ -4994,6 +5151,27 @@ def main() -> None:
         editor_video_duration = raw_video_duration
         if meta:
             st.caption(f"{int(meta.get('width', 0))}x{int(meta.get('height', 0))} · {compact_time(meta.get('duration', 0))} · {meta.get('fps', 0):.2f} fps")
+
+        st.markdown("#### Choose a fixed video template")
+        st.caption(
+            "The window positions are locked to the supplied design. The primary "
+            "video always occupies the left-most window."
+        )
+        template_preview_columns = st.columns(4)
+        for preview_column, (template_name, template_config) in zip(
+            template_preview_columns, WINDOW_TEMPLATES.items()
+        ):
+            template_asset = WINDOW_TEMPLATE_DIR / str(template_config["file"])
+            preview_column.image(str(template_asset), width="stretch")
+            preview_column.caption(template_name)
+        st.segmented_control(
+            "Template",
+            list(WINDOW_TEMPLATES),
+            default="One window",
+            key="partner_window_template",
+            width="stretch",
+        )
+        selected_template_label, selected_template_config = selected_window_template()
 
         # Reserve the visual order before populating each part later in the run.
         render_stage_header(
@@ -5660,7 +5838,7 @@ def main() -> None:
             )
 
     with editor_controls_slot:
-        template_layout = "two_column"
+        template_layout = "fixed_window"
         latest_editor_preview = Path(
             str(st.session_state.get("partner_latest_preview") or "")
         )
@@ -5814,6 +5992,192 @@ def main() -> None:
             step=0.5,
             key="partner_template_photo_seconds",
         )
+
+        media_panel.divider()
+        media_panel.markdown("**Fixed template windows**")
+        media_panel.caption(
+            "Window 1 contains the primary video. Add photos or editable videos "
+            "to the remaining windows; each window plays its files in order."
+        )
+        all_window_slot_items = st.session_state.setdefault(
+            "partner_window_slot_items", {}
+        )
+        template_slot_store = all_window_slot_items.setdefault(
+            selected_template_label, {}
+        )
+        selected_slots = list(selected_template_config["slots"])
+        for slot_number in range(2, len(selected_slots) + 1):
+            slot_key = str(slot_number)
+            slot_uploads = media_panel.file_uploader(
+                f"Window {slot_number} media",
+                type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "m4v", "webm", "mkv"],
+                accept_multiple_files=True,
+                key=f"partner_window_upload_{selected_template_label}_{slot_number}",
+                help="Photos and videos play in the order selected.",
+            )
+            slot_signature = tuple(
+                f"{upload.name}:{upload.size}" for upload in (slot_uploads or [])
+            )
+            signature_key = f"partner_window_signature_{selected_template_label}_{slot_number}"
+            if slot_signature and st.session_state.get(signature_key) != slot_signature:
+                saved_slot_items = []
+                for position, uploaded_media in enumerate(slot_uploads or []):
+                    saved_media = save_overlay_upload(
+                        uploaded_media, time.time_ns() + slot_number * 100 + position
+                    )
+                    media_type = (
+                        "video"
+                        if saved_media.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+                        else "image"
+                    )
+                    clip_duration = (
+                        probe_media_duration(saved_media) if media_type == "video" else 0.0
+                    )
+                    saved_slot_items.append(
+                        {
+                            "id": uuid.uuid4().hex,
+                            "path": str(saved_media),
+                            "name": uploaded_media.name,
+                            "media_type": media_type,
+                            "clip_duration": clip_duration,
+                            "trim_mode": "keep",
+                            "ranges": [(0.0, clip_duration)] if media_type == "video" else [],
+                            "use_clip_audio": False,
+                        }
+                    )
+                template_slot_store[slot_key] = saved_slot_items
+                st.session_state[signature_key] = slot_signature
+
+        secondary_videos = [
+            (slot_number, item)
+            for slot_number in range(2, len(selected_slots) + 1)
+            for item in template_slot_store.get(str(slot_number), [])
+            if item.get("media_type") == "video"
+            and Path(str(item.get("path") or "")).is_file()
+        ]
+        if secondary_videos:
+            media_panel.markdown("**Edit a secondary video**")
+            video_choices = {
+                f"Window {slot_number} · {item.get('name')}": (slot_number, item)
+                for slot_number, item in secondary_videos
+            }
+            selected_secondary_label = media_panel.selectbox(
+                "Video to edit",
+                list(video_choices),
+                key=f"partner_secondary_editor_{selected_template_label}",
+            )
+            selected_slot_number, selected_secondary = video_choices[
+                selected_secondary_label
+            ]
+            secondary_duration = max(
+                0.1, float(selected_secondary.get("clip_duration") or 0.1)
+            )
+            trim_mode_label = media_panel.segmented_control(
+                "Edit mode",
+                ["Keep sections", "Remove sections"],
+                default=(
+                    "Remove sections"
+                    if selected_secondary.get("trim_mode") == "remove"
+                    else "Keep sections"
+                ),
+                key=f"partner_secondary_mode_{selected_secondary['id']}",
+            )
+            selected_secondary["trim_mode"] = (
+                "remove" if trim_mode_label == "Remove sections" else "keep"
+            )
+            new_range = media_panel.slider(
+                "Section from → to",
+                0.0,
+                float(secondary_duration),
+                (0.0, min(float(secondary_duration), 5.0)),
+                0.1,
+                key=f"partner_secondary_range_{selected_secondary['id']}",
+            )
+            if media_panel.button(
+                f"Add {trim_mode_label.lower()}",
+                key=f"partner_secondary_add_range_{selected_secondary['id']}",
+            ):
+                ranges = list(selected_secondary.get("ranges") or [])
+                # The initial full-length keep is a default, not a second range.
+                if selected_secondary.get("trim_mode") == "keep" and ranges == [
+                    (0.0, secondary_duration)
+                ]:
+                    ranges = []
+                ranges.append((float(new_range[0]), float(new_range[1])))
+                selected_secondary["ranges"] = ranges
+            for range_index, (range_start, range_end) in enumerate(
+                list(selected_secondary.get("ranges") or [])
+            ):
+                range_columns = media_panel.columns([0.84, 0.16])
+                range_columns[0].caption(
+                    f"{range_index + 1}. {compact_time(range_start)}–{compact_time(range_end)}"
+                )
+                if range_columns[1].button(
+                    "Remove",
+                    key=f"partner_secondary_remove_{selected_secondary['id']}_{range_index}",
+                ):
+                    selected_secondary["ranges"] = [
+                        value
+                        for index, value in enumerate(selected_secondary.get("ranges") or [])
+                        if index != range_index
+                    ]
+            selected_secondary["use_clip_audio"] = media_panel.toggle(
+                "Use this clip's audio",
+                value=bool(selected_secondary.get("use_clip_audio")),
+                key=f"partner_secondary_audio_{selected_secondary['id']}",
+            )
+
+        media_panel.divider()
+        media_panel.markdown("**Speaker or location labels**")
+        media_panel.caption(
+            "Each label uses the black name plate, lasts 7 seconds by default, "
+            "and can be repeated at another timestamp."
+        )
+        name_cards = st.session_state.setdefault("partner_template_name_cards", [])
+        media_panel.button(
+            ":material/add: Add name/location",
+            on_click=add_template_name_card,
+            args=(editor_video_duration,),
+            key="partner_add_template_name_card",
+        )
+        for card_index, card in enumerate(name_cards):
+            with media_panel.expander(
+                f"Label {card_index + 1} · {card.get('text') or 'Untitled'}",
+                expanded=not bool(card.get("text")),
+            ):
+                card["text"] = st.text_input(
+                    "Name or location",
+                    value=str(card.get("text") or ""),
+                    key=f"partner_name_card_text_{card['id']}",
+                )
+                timing_columns = st.columns(2)
+                card["start"] = timing_columns[0].number_input(
+                    "Start (seconds)",
+                    0.0,
+                    max(0.0, float(editor_video_duration) - 0.1),
+                    float(clamp_float(float(card.get("start") or 0), 0, editor_video_duration)),
+                    0.1,
+                    key=f"partner_name_card_start_{card['id']}",
+                )
+                max_card_duration = max(0.1, editor_video_duration - float(card["start"]))
+                card["duration"] = timing_columns[1].number_input(
+                    "Duration (seconds)",
+                    0.1,
+                    float(max_card_duration),
+                    float(clamp_float(float(card.get("duration") or 7), 0.1, max_card_duration)),
+                    0.1,
+                    key=f"partner_name_card_duration_{card['id']}",
+                )
+                card["font_size"] = st.number_input(
+                    "Text size", 12, 64, int(card.get("font_size") or 34), 1,
+                    key=f"partner_name_card_font_{card['id']}",
+                )
+                st.button(
+                    "Remove this label",
+                    on_click=remove_template_name_card,
+                    args=(str(card["id"]),),
+                    key=f"partner_remove_name_card_{card['id']}",
+                )
         if template_header_upload:
             header_signature = (
                 f"{template_header_upload.name}:{template_header_upload.size}"
@@ -5997,9 +6361,35 @@ def main() -> None:
             str(st.session_state.get("partner_template_header_path") or "")
         )
         template_loop_paths_for_editor = [Path(str(item["path"])) for item in template_loop_items]
-        default_canvas_layout = [
-            {"id": "source", "x": 0.0, "y": 0.20, "w": 0.50, "h": 0.80, "z": 1, "start": 0.0, "duration": editor_video_duration},
+        window_slot_boxes = [
+            _normalised_box(tuple(box)) for box in selected_template_config["slots"]
         ]
+        window_frame_path = window_template_frame_asset(selected_template_label)
+        source_slot = window_slot_boxes[0]
+        default_canvas_layout = [
+            {"id": "source", **source_slot, "z": 1, "start": 0.0, "duration": editor_video_duration},
+            {"id": "window_template_frame", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "z": 50, "start": 0.0, "duration": editor_video_duration},
+        ]
+        active_fixed_slot_items: Dict[str, List[Dict[str, object]]] = {}
+        for slot_number in range(2, len(window_slot_boxes) + 1):
+            slot_items = [
+                dict(item)
+                for item in template_slot_store.get(str(slot_number), [])
+                if Path(str(item.get("path") or "")).is_file()
+            ]
+            if not slot_items:
+                continue
+            slot_id = f"window_slot_{slot_number}"
+            active_fixed_slot_items[slot_id] = slot_items
+            default_canvas_layout.append(
+                {
+                    "id": slot_id,
+                    **window_slot_boxes[slot_number - 1],
+                    "z": slot_number,
+                    "start": 0.0,
+                    "duration": editor_video_duration,
+                }
+            )
         if (
             template_header_path_for_editor.is_file()
             and "header_image" not in hidden_template_components
@@ -6027,22 +6417,31 @@ def main() -> None:
         for default_item in default_canvas_layout:
             if default_item["id"] not in current_canvas_ids:
                 current_canvas_layout.append(default_item)
+        fixed_geometry_by_id = {
+            str(item["id"]): item
+            for item in default_canvas_layout
+            if str(item["id"]).startswith("window_") or item["id"] == "source"
+        }
+        for canvas_item in current_canvas_layout:
+            fixed_item = fixed_geometry_by_id.get(str(canvas_item.get("id")))
+            if fixed_item:
+                canvas_item.update(
+                    {key: fixed_item[key] for key in ("x", "y", "w", "h", "z")}
+                )
         for canvas_item in current_canvas_layout:
             if str(canvas_item.get("id")) == "header_image":
                 canvas_item["start"] = float(top_png_start)
                 canvas_item["duration"] = float(top_png_duration)
+        st.session_state["partner_template_canvas_layout"] = current_canvas_layout
         canvas_images = [
             {
                 "id": "source",
                 "name": "Raw video",
                 "kind": "video",
                 "timing_locked": True,
-                "fit_mode": "contain",
-                "lock_aspect": True,
-                "aspect_ratio": (
-                    float(meta.get("width") or 16)
-                    / max(1.0, float(meta.get("height") or 9))
-                ),
+                "fit_mode": "cover",
+                "position_locked": True,
+                "lock_aspect": False,
                 "deletable": False,
                 "src": video_preview_data_url(
                     str(source_path), source_path.stat().st_mtime_ns
@@ -6057,6 +6456,90 @@ def main() -> None:
                 "duration": editor_video_duration,
             },
         ]
+        for slot_id, slot_items in active_fixed_slot_items.items():
+            playlist: List[Dict[str, object]] = []
+            for slot_item in slot_items:
+                slot_path = Path(str(slot_item["path"]))
+                slot_media_type = str(slot_item.get("media_type") or "image")
+                preview_path = slot_path
+                preview_duration = float(template_photo_seconds)
+                if slot_media_type == "video":
+                    clip_duration = max(
+                        0.1, float(slot_item.get("clip_duration") or 0.1)
+                    )
+                    raw_ranges = [
+                        {"start": float(start), "end": float(end)}
+                        for start, end in slot_item.get("ranges") or []
+                    ]
+                    selected_ranges = normalise_cut_ranges(raw_ranges, clip_duration)
+                    slot_cuts = (
+                        cuts_from_kept_ranges(selected_ranges, clip_duration)
+                        if slot_item.get("trim_mode") == "keep" and selected_ranges
+                        else selected_ranges
+                        if slot_item.get("trim_mode") == "remove"
+                        else []
+                    )
+                    if slot_cuts:
+                        edited_path, _ = build_source_cut_cache(slot_path, slot_cuts)
+                        if edited_path:
+                            preview_path = edited_path
+                    preview_duration = max(0.1, probe_media_duration(preview_path))
+                    slot_item["edited_path"] = str(preview_path)
+                    slot_item["edited_duration"] = preview_duration
+                preview_src = (
+                    video_preview_data_url(str(preview_path), preview_path.stat().st_mtime_ns)
+                    if slot_media_type == "video"
+                    else image_preview_data_url(str(preview_path), preview_path.stat().st_mtime_ns)
+                )
+                playlist.append(
+                    {
+                        "name": str(slot_item.get("name") or preview_path.name),
+                        "kind": slot_media_type,
+                        "src": preview_src,
+                        "video_src": (
+                            canvas_video_data_url(str(preview_path), preview_path.stat().st_mtime_ns)
+                            if slot_media_type == "video"
+                            else ""
+                        ),
+                        "duration": preview_duration,
+                        "preview_volume": 1.0 if slot_item.get("use_clip_audio") else 0.0,
+                    }
+                )
+            if playlist:
+                first_slot_item = playlist[0]
+                canvas_images.append(
+                    {
+                        "id": slot_id,
+                        "name": slot_id.replace("_", " ").title(),
+                        "kind": str(first_slot_item["kind"]),
+                        "timing_locked": True,
+                        "position_locked": True,
+                        "fit_mode": "cover",
+                        "deletable": False,
+                        "src": str(first_slot_item["src"]),
+                        "video_src": str(first_slot_item["video_src"]),
+                        "playlist": playlist,
+                        "start": 0.0,
+                        "duration": editor_video_duration,
+                    }
+                )
+        canvas_images.append(
+            {
+                "id": "window_template_frame",
+                "name": selected_template_label,
+                "kind": "image",
+                "timing_locked": True,
+                "position_locked": True,
+                "decorative": True,
+                "fit_mode": "contain_transparent",
+                "deletable": False,
+                "src": image_preview_data_url(
+                    str(window_frame_path), window_frame_path.stat().st_mtime_ns
+                ),
+                "start": 0.0,
+                "duration": editor_video_duration,
+            }
+        )
         if (
             template_header_path_for_editor.is_file()
             and "header_image" not in hidden_template_components
@@ -6924,6 +7407,122 @@ def main() -> None:
                 }
             )
 
+        # Schedule every fixed-window playlist across the complete edited video.
+        for slot_id, slot_items in active_fixed_slot_items.items():
+            slot_number = int(slot_id.rsplit("_", 1)[-1])
+            slot_geometry = window_slot_boxes[slot_number - 1]
+            slot_cursor = 0.0
+            slot_item_index = 0
+            while slot_cursor < template_duration - 0.01 and slot_items:
+                slot_item = slot_items[slot_item_index % len(slot_items)]
+                slot_path = Path(
+                    str(slot_item.get("edited_path") or slot_item.get("path") or "")
+                )
+                if not slot_path.is_file():
+                    slot_item_index += 1
+                    if slot_item_index >= len(slot_items):
+                        break
+                    continue
+                slot_type = str(slot_item.get("media_type") or "image")
+                slot_item_duration = (
+                    max(0.1, float(slot_item.get("edited_duration") or probe_media_duration(slot_path)))
+                    if slot_type == "video"
+                    else float(template_photo_seconds)
+                )
+                visible_duration = min(
+                    slot_item_duration, template_duration - slot_cursor
+                )
+                image_overlays_for_export.append(
+                    {
+                        "id": f"{slot_id}:{slot_cursor:.3f}",
+                        "path": str(slot_path),
+                        "media_type": slot_type,
+                        "fit_mode": "cover",
+                        "start": slot_cursor,
+                        "duration": visible_duration,
+                        **slot_geometry,
+                        "z": slot_number,
+                        "use_clip_audio": bool(slot_item.get("use_clip_audio")),
+                        "audio_mode": "mix",
+                        "audio_volume": 1.0,
+                    }
+                )
+                slot_cursor += visible_duration
+                slot_item_index += 1
+
+        image_overlays_for_export.append(
+            {
+                "id": "fixed-window-template-frame",
+                "path": str(window_frame_path),
+                "media_type": "image",
+                "fit_mode": "contain_transparent",
+                "start": 0.0,
+                "duration": template_duration,
+                "x": 0.0,
+                "y": 0.0,
+                "w": 1.0,
+                "h": 1.0,
+                "z": 50,
+            }
+        )
+
+        name_editor_images: List[Dict[str, object]] = []
+        name_editor_layout: List[Dict[str, object]] = []
+        name_geometry = _normalised_box(
+            tuple(selected_template_config["name_box"])
+        )
+        for name_index, name_card in enumerate(
+            st.session_state.get("partner_template_name_cards", [])
+        ):
+            if not str(name_card.get("text") or "").strip():
+                continue
+            name_asset = build_template_name_asset(name_card, source_path)
+            name_id = f"template_name:{name_card['id']}"
+            name_start = clamp_float(
+                float(name_card.get("start") or 0), 0.0, editor_video_duration
+            )
+            name_duration = clamp_float(
+                float(name_card.get("duration") or 7.0),
+                0.1,
+                max(0.1, editor_video_duration - name_start),
+            )
+            name_overlay = {
+                "id": name_id,
+                "path": str(name_asset),
+                "media_type": "image",
+                "fit_mode": "contain_transparent",
+                "start": name_start,
+                "duration": name_duration,
+                **name_geometry,
+                "z": 60 + name_index,
+            }
+            image_overlays_for_export.append(name_overlay)
+            name_editor_images.append(
+                {
+                    "id": name_id,
+                    "name": str(name_card.get("text")),
+                    "kind": "image",
+                    "timing_locked": True,
+                    "position_locked": True,
+                    "deletable": False,
+                    "fit_mode": "contain_transparent",
+                    "src": image_preview_data_url(
+                        str(name_asset), name_asset.stat().st_mtime_ns
+                    ),
+                    "start": name_start,
+                    "duration": name_duration,
+                }
+            )
+            name_editor_layout.append(
+                {
+                    "id": name_id,
+                    **name_geometry,
+                    "z": 60 + name_index,
+                    "start": name_start,
+                    "duration": name_duration,
+                }
+            )
+
         st.divider()
         st.markdown("**Top-strip slugs**")
         st.caption(
@@ -7188,18 +7787,14 @@ def main() -> None:
                     }
                 )
                 if slug_text.strip():
-                    slug["region"] = "template_header"
-                    existing_geometry = (
-                        slug.get("geometry")
-                        if isinstance(slug.get("geometry"), dict)
-                        else {}
+                    slug["region"] = "fixed_template_strip"
+                    slug["transparent_surface"] = True
+                    fixed_slug_geometry = _normalised_box(
+                        tuple(selected_template_config["slug_box"])
                     )
                     slug["geometry"] = {
-                        "x": float(existing_geometry.get("x", 0.22)),
-                        "y": float(existing_geometry.get("y", 0.03)),
-                        "w": float(existing_geometry.get("w", 0.74)),
-                        "h": float(existing_geometry.get("h", 0.16)),
-                        "z": int(existing_geometry.get("z", slug_index + 10)),
+                        **fixed_slug_geometry,
+                        "z": 70 + slug_index,
                     }
                     slug["z"] = int(slug["geometry"].get("z", 3))
                     expanded_slug_items = expand_slug_text_timeline(
@@ -7277,6 +7872,8 @@ def main() -> None:
         # their ids keeps them distinct from the template's fixed components.
         unified_canvas_images = list(canvas_images)
         unified_canvas_layout = list(current_canvas_layout)
+        unified_canvas_images.extend(name_editor_images)
+        unified_canvas_layout.extend(name_editor_layout)
         for slug_image, slug_layout in zip(slug_editor_images, slug_editor_layout):
             prefixed_slug_id = f"slug:{slug_image['id']}"
             unified_canvas_images.append(
@@ -7284,6 +7881,7 @@ def main() -> None:
                     **slug_image,
                     "id": prefixed_slug_id,
                     "timing_locked": True,
+                    "position_locked": True,
                     "deletable": True,
                 }
             )
@@ -7363,6 +7961,7 @@ def main() -> None:
                 storage_key=(
                     "partner-template-canvas:"
                     f"{st.session_state.get('partner_video_signature', source_path.name)}:"
+                    f"{selected_template_label}:"
                     f"{selected_property}:"
                     f"{st.session_state.get('partner_template_header_upload_generation', 0)}:"
                     f"{st.session_state.get('partner_template_loop_upload_generation', 0)}:"
@@ -7372,6 +7971,7 @@ def main() -> None:
                 key=(
                     "partner_template_canvas_"
                     f"{st.session_state.get('partner_video_signature', source_path.name)}_"
+                    f"{selected_template_label}_"
                     f"{selected_property}_"
                     f"{st.session_state.get('partner_template_canvas_generation', 0)}"
                 ),

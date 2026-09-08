@@ -88,6 +88,9 @@
     .resize.nw { left: -5px; top: -5px; cursor: nwse-resize; }
     .resize.se { right: -5px; bottom: -5px; cursor: nwse-resize; }
     .resize.sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
+    .tile.position-locked .resize, .tile.decorative .resize,
+    .tile.decorative .tile-name, .tile.decorative .media-kind { display:none; }
+    .tile.decorative { pointer-events:none; border-color:transparent; box-shadow:none; }
     .empty { position: absolute; inset: 0; display: grid; place-items: center; color: #8d95a3; font-size: 14px; text-align: center; padding: 30px; }
     .hint { color: #8f96a3; font-size: 12px; margin: 7px 0 10px; }
     .inspector-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
@@ -760,8 +763,11 @@
     }
 
     function renderInspector() {
-      const item=current(); [inspectX,inspectY,inspectW,inspectH].forEach(input=>input.disabled=!item);
-      ["bringForward","bringFront","sendBackward","sendBack"].forEach(id=>document.getElementById(id).disabled=!item);
+      const item=current();
+      const image=item ? imageFor(item.id) : null;
+      const positionLocked=Boolean(image?.position_locked || image?.decorative);
+      [inspectX,inspectY,inspectW,inspectH].forEach(input=>input.disabled=!item || positionLocked);
+      ["bringForward","bringFront","sendBackward","sendBack"].forEach(id=>document.getElementById(id).disabled=!item || positionLocked);
       if(!item) return;
       inspectX.value=(item.x*100).toFixed(1); inspectY.value=(item.y*100).toFixed(1);
       inspectW.value=(item.w*100).toFixed(1); inspectH.value=(item.h*100).toFixed(1);
@@ -916,7 +922,10 @@
       video.addEventListener("ended", () => { playButton.textContent = "▶"; });
       tile.addEventListener("pointerdown", event => {
         const item = layout.find(value => String(value.id) === String(tile.dataset.id));
-        if (item) beginSpatial(event, item, event.target.dataset.resize || "move");
+        const image = item ? imageFor(item.id) : null;
+        if (item && !image?.position_locked && !image?.decorative) {
+          beginSpatial(event, item, event.target.dataset.resize || "move");
+        }
       });
       return tile;
     }
@@ -948,7 +957,7 @@
           stage.appendChild(tile);
         }
         const containsMedia = String(image.fit_mode || "").startsWith("contain");
-        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${containsMedia ? " contain-media" : ""}`;
+        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${containsMedia ? " contain-media" : ""}${image.position_locked ? " position-locked" : ""}${image.decorative ? " decorative" : ""}`;
         tile.dataset.id = String(item.id);
         Object.assign(tile.style, {
           display: visibleIds.has(String(item.id)) ? "block" : "none",
@@ -1843,7 +1852,9 @@
           if (!existing) return updated;
           // Keep freehand geometry and z-order, but refresh externally managed
           // timing whenever cuts/kept ranges change the edited duration.
-          return image.timing_locked && updated
+          return image.position_locked && updated
+            ? {...updated}
+            : image.timing_locked && updated
             ? {...existing, start:updated.start, duration:updated.duration}
             : existing;
         });

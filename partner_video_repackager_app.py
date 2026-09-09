@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.09.13"
+APP_BUILD_ID = "Editor-2026.09.09.14"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -343,8 +343,7 @@ PUBLISHER_SLUG_FONTS: Dict[str, Dict[str, str]] = {
     "English · Roboto Slab Bold": {"file": "RobotoSlab.ttf", "variation": "Bold"},
     "English · Newsreader Bold": {"file": "Newsreader.ttf", "variation": "Bold"},
 }
-DEFAULT_HINDI_SLUG_FONT = "Hindi · Noto Sans Devanagari Bold"
-DEFAULT_ENGLISH_SLUG_FONT = "English · Roboto Condensed Bold"
+DEFAULT_HINDI_SLUG_FONT = "Hindi · Mukta SemiBold"
 
 SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
     "Jagran Red": {
@@ -1031,7 +1030,7 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
 
     text_value = re.sub(r"\s+", " ", str(card.get("text") or "")).strip()
     font_size = int(clamp_float(float(card.get("font_size") or 34), 12, 64))
-    font_name = str(card.get("font_name") or DEFAULT_ENGLISH_SLUG_FONT)
+    font_name = str(card.get("font_name") or DEFAULT_HINDI_SLUG_FONT)
     text_color = str(card.get("text_color") or "#FFFFFF")
     payload = f"name-card-v4:{text_value}:{font_size}:{font_name}:{text_color}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -1057,7 +1056,7 @@ def add_template_name_card(video_duration: float) -> None:
             "start": 0.0,
             "duration": min(7.0, max(0.1, float(video_duration))),
             "font_size": 34,
-            "font_name": DEFAULT_ENGLISH_SLUG_FONT,
+            "font_name": DEFAULT_HINDI_SLUG_FONT,
             "text_color": "#FFFFFF",
         }
     )
@@ -3096,11 +3095,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     highlight_color = str(slug.get("highlight_color") or preset["accent"])
     region = str(slug.get("region") or "lower_third")
     geometry = slug.get("geometry") if isinstance(slug.get("geometry"), dict) else {}
-    default_font_name = (
-        DEFAULT_HINDI_SLUG_FONT
-        if re.search(r"[\u0900-\u097f]", text)
-        else DEFAULT_ENGLISH_SLUG_FONT
-    )
+    default_font_name = DEFAULT_HINDI_SLUG_FONT
     font_name = str(slug.get("font_name") or default_font_name)
     if font_name not in PUBLISHER_SLUG_FONTS:
         font_name = default_font_name
@@ -8154,11 +8149,7 @@ def main() -> None:
                 )
                 current_font_name = str(slug.get("font_name") or "")
                 if current_font_name not in PUBLISHER_SLUG_FONTS:
-                    current_font_name = (
-                        DEFAULT_HINDI_SLUG_FONT
-                        if re.search(r"[\u0900-\u097f]", slug_text)
-                        else DEFAULT_ENGLISH_SLUG_FONT
-                    )
+                    current_font_name = DEFAULT_HINDI_SLUG_FONT
                 slug_font_name = slug_form.selectbox(
                     "Font type",
                     list(PUBLISHER_SLUG_FONTS),

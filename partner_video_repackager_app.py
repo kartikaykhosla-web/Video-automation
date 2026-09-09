@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.08.11"
+APP_BUILD_ID = "Editor-2026.09.09.12"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -225,6 +225,7 @@ def choose_window_template(template_label: str) -> None:
         return
     st.session_state["partner_window_template"] = template_label
     st.session_state["partner_active_video_window"] = "1"
+    st.session_state.pop("partner_canvas_focus_window", None)
     st.session_state.pop("partner_window_media_target", None)
     st.session_state.pop("partner_window_media_action", None)
     st.session_state.pop("partner_template_canvas_layout", None)
@@ -252,6 +253,7 @@ def select_window_media_target(
 def select_active_video_window(slot_number: int) -> None:
     """Switch the visible trim controls to the requested template window."""
     st.session_state["partner_active_video_window"] = str(slot_number)
+    st.session_state["partner_canvas_focus_window"] = str(slot_number)
 
 
 def clear_window_media(template_label: str, slot_number: int) -> None:
@@ -267,6 +269,11 @@ def clear_window_media(template_label: str, slot_number: int) -> None:
     ):
         st.session_state.pop("partner_window_media_target", None)
         st.session_state.pop("partner_window_media_action", None)
+    if str(st.session_state.get("partner_canvas_focus_window") or "") == str(
+        slot_number
+    ):
+        st.session_state.pop("partner_canvas_focus_window", None)
+        st.session_state["partner_active_video_window"] = "1"
     st.session_state["partner_template_canvas_generation"] = (
         int(st.session_state.get("partner_template_canvas_generation", 0)) + 1
     )
@@ -386,7 +393,7 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 overlay_layout_editor = components.declare_component(
-    "partner_overlay_timeline_editor_v4",
+    "partner_overlay_timeline_editor_v5",
     path=str(OVERLAY_EDITOR_DIR),
 )
 
@@ -1133,18 +1140,50 @@ def video_preview_data_url(path_value: str, modified_ns: int) -> str:
         with av.open(path_value) as container:
             frame = next(container.decode(video=0))
             still = frame.to_image().convert("RGB")
-        canvas = ImageOps.fit(
-            still,
-            (960, 540),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
+        fitted = ImageOps.contain(
+            still, (960, 540), method=Image.Resampling.LANCZOS
+        )
+        canvas = Image.new("RGB", (960, 540), "black")
+        canvas.paste(
+            fitted,
+            ((canvas.width - fitted.width) // 2, (canvas.height - fitted.height) // 2),
         )
         buffer = BytesIO()
         canvas.save(buffer, format="JPEG", quality=72, optimize=True)
-        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{encoded}"
+        payload = buffer.getvalue()
     except Exception:
-        return ""
+        ffmpeg = tool_path("ffmpeg")
+        if not ffmpeg:
+            return ""
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    path_value,
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=960:540:force_original_aspect_ratio=decrease,"
+                    "pad=960:540:(ow-iw)/2:(oh-ih)/2:black",
+                    "-f",
+                    "image2pipe",
+                    "-vcodec",
+                    "mjpeg",
+                    "pipe:1",
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+        except Exception:
+            return ""
+        payload = result.stdout if result.returncode == 0 else b""
+        if not payload:
+            return ""
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
@@ -3513,6 +3552,7 @@ def export_horizontal_video(
     timeline_audio_overlays: Optional[List[Dict[str, object]]] = None,
     template_layout: str = "classic",
     template_geometry: Optional[Dict[str, Dict[str, float]]] = None,
+    template_fit_modes: Optional[Dict[str, str]] = None,
     raw_audio_settings: Optional[Dict[str, object]] = None,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
@@ -3602,7 +3642,8 @@ def export_horizontal_video(
     # Preserve the complete raw frame inside its freehand canvas box. Cropping
     # a landscape source into a tall/narrow tile made interview text and faces
     # appear to move outside the editor boundary.
-    if template_layout == "fixed_window":
+    source_fit_mode = str((template_fit_modes or {}).get("1") or "contain")
+    if template_layout == "fixed_window" and source_fit_mode == "cover":
         video_transform = (
             f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
             f"crop={video_width}:{video_height},"
@@ -3782,6 +3823,7 @@ def export_horizontal_video(
                     "w": float(item.get("w") or 1.0),
                     "h": float(item.get("h") or 1.0),
                     "z": int(item.get("z") or 0),
+                    "fit_mode": str(item.get("fit_mode") or "cover"),
                 }
             )
             if bool(item.get("use_clip_audio")) and media_has_audio(
@@ -3939,13 +3981,23 @@ def export_horizontal_video(
             # H.264 works most reliably with even frame dimensions.
             box_width = max(80, box_width - box_width % 2)
             box_height = max(80, box_height - box_height % 2)
+            if str(visual.get("fit_mode") or "cover").startswith("contain"):
+                video_fit_filter = (
+                    f"scale={box_width}:{box_height}:"
+                    "force_original_aspect_ratio=decrease,"
+                    f"pad={box_width}:{box_height}:(ow-iw)/2:(oh-ih)/2:black"
+                )
+            else:
+                video_fit_filter = (
+                    f"scale={box_width}:{box_height}:"
+                    "force_original_aspect_ratio=increase,"
+                    f"crop={box_width}:{box_height}"
+                )
             filter_parts.append(
                 f"[{overlay_input}:v]"
                 f"trim=start={trim_start:.3f}:duration={duration:.3f},"
                 "setpts=PTS-STARTPTS,"
-                f"scale={box_width}:{box_height}:"
-                "force_original_aspect_ratio=increase,"
-                f"crop={box_width}:{box_height},"
+                f"{video_fit_filter},"
                 f"setpts=PTS+{start:.3f}/TB[bytev{overlay_number}]"
             )
             overlay_source = f"bytev{overlay_number}"
@@ -5292,11 +5344,13 @@ def main() -> None:
         # Keep a stable block in the page tree. st.empty() clears its previous
         # child at the beginning of every rerun, which made the large editor
         # iframe visibly disappear while controls and previews were rebuilt.
+        # Media selection belongs immediately above the canvas so editors can
+        # switch sources without scrolling to a separate secondary-video area.
+        window_assignment_slot = st.container()
         video_canvas_slot = st.container()
         # These are persistent multi-element sections. Unlike st.empty(),
         # containers grow with their children, so Streamlit Cloud recalculates
         # the full document height and the page can scroll to the final control.
-        window_assignment_slot = st.container()
         editor_controls_slot = st.container()
         transcript_slot = st.container()
         voice_slot = st.container()
@@ -5946,6 +6000,14 @@ def main() -> None:
         )
         selected_slots = list(selected_template_config["slots"])
         st.session_state.setdefault("partner_active_video_window", "1")
+        all_window_fit_modes = st.session_state.setdefault(
+            "partner_window_fit_modes", {}
+        )
+        template_fit_modes = all_window_fit_modes.setdefault(
+            selected_template_label, {}
+        )
+        for slot_number in range(1, len(selected_slots) + 1):
+            template_fit_modes.setdefault(str(slot_number), "contain")
 
         if len(selected_slots) > 1:
             with st.container(border=True):
@@ -5960,6 +6022,13 @@ def main() -> None:
                 )
                 with slot_columns[0].container(border=True, height="stretch"):
                     st.caption("WINDOW 1 · LEFT")
+                    primary_thumbnail = video_preview_data_url(
+                        str(source_path), source_path.stat().st_mtime_ns
+                    )
+                    if primary_thumbnail:
+                        st.image(primary_thumbnail, width="stretch")
+                    else:
+                        st.caption("Video thumbnail unavailable")
                     st.markdown(
                         f"**{'Editing · ' if primary_active else ''}Primary video**"
                     )
@@ -5972,6 +6041,20 @@ def main() -> None:
                         key=f"partner_edit_primary_{selected_template_label}",
                         on_click=select_active_video_window,
                         args=(1,),
+                    )
+                    primary_fit_label = st.segmented_control(
+                        "Window 1 fit",
+                        ["Fit full video", "Fill frame"],
+                        default=(
+                            "Fill frame"
+                            if template_fit_modes.get("1") == "cover"
+                            else "Fit full video"
+                        ),
+                        key=f"partner_window_fit_{selected_template_label}_1",
+                        label_visibility="collapsed",
+                    )
+                    template_fit_modes["1"] = (
+                        "cover" if primary_fit_label == "Fill frame" else "contain"
                     )
 
                 for slot_number in range(2, len(selected_slots) + 1):
@@ -5991,6 +6074,23 @@ def main() -> None:
                     ):
                         st.caption(f"WINDOW {slot_number}")
                         if slot_items:
+                            thumbnail_item = slot_items[0]
+                            thumbnail_path = Path(str(thumbnail_item["path"]))
+                            thumbnail_src = (
+                                video_preview_data_url(
+                                    str(thumbnail_path),
+                                    thumbnail_path.stat().st_mtime_ns,
+                                )
+                                if thumbnail_item.get("media_type") == "video"
+                                else image_preview_data_url(
+                                    str(thumbnail_path),
+                                    thumbnail_path.stat().st_mtime_ns,
+                                )
+                            )
+                            if thumbnail_src:
+                                st.image(thumbnail_src, width="stretch")
+                            else:
+                                st.caption("Media thumbnail unavailable")
                             item_names = [str(item.get("name") or "Media") for item in slot_items]
                             st.markdown(
                                 f"**{'Editing · ' if is_active else ''}"
@@ -6008,6 +6108,25 @@ def main() -> None:
                                     on_click=select_active_video_window,
                                     args=(slot_number,),
                                 )
+                            slot_fit_label = st.segmented_control(
+                                f"Window {slot_number} fit",
+                                ["Fit full video", "Fill frame"],
+                                default=(
+                                    "Fill frame"
+                                    if template_fit_modes.get(slot_key) == "cover"
+                                    else "Fit full video"
+                                ),
+                                key=(
+                                    f"partner_window_fit_{selected_template_label}_"
+                                    f"{slot_number}"
+                                ),
+                                label_visibility="collapsed",
+                            )
+                            template_fit_modes[slot_key] = (
+                                "cover"
+                                if slot_fit_label == "Fill frame"
+                                else "contain"
+                            )
                             action_columns = st.columns(3)
                             action_columns[0].button(
                                 "Add",
@@ -6110,6 +6229,9 @@ def main() -> None:
                                 st.session_state.pop("partner_window_media_target", None)
                                 st.session_state.pop("partner_window_media_action", None)
                                 st.session_state["partner_active_video_window"] = str(target_slot)
+                                st.session_state["partner_canvas_focus_window"] = str(
+                                    target_slot
+                                )
                                 st.rerun()
                         else:
                             provider = str(media_source)
@@ -6154,59 +6276,109 @@ def main() -> None:
                                 st.session_state.get(f"{search_key}_results", [])
                             )
                             if provider_results:
-                                result_labels = {
-                                    f"{item.get('title') or provider + ' video'}"
-                                    f" · {item.get('usn') or item.get('id') or index + 1}": item
-                                    for index, item in enumerate(provider_results)
-                                }
-                                chosen_result_label = st.selectbox(
-                                    f"Choose a {provider} video",
-                                    list(result_labels),
-                                    key=f"{search_key}_selected",
+                                preview_token = ""
+                                if provider == "Reuters":
+                                    try:
+                                        preview_token = _reuters_token(provider_config)
+                                    except Exception:
+                                        pass
+                                st.caption(
+                                    "Select a thumbnail to import that video into "
+                                    f"window {target_slot}."
                                 )
-                                if st.button(
-                                    "Import into this window",
-                                    icon=":material/download:",
-                                    type="primary",
-                                    key=f"{search_key}_import",
-                                ):
-                                    with st.spinner(
-                                        f"Importing the licensed {provider} video..."
+                                for row_start in range(0, len(provider_results), 3):
+                                    result_columns = st.columns(3)
+                                    for column_offset, result in enumerate(
+                                        provider_results[row_start : row_start + 3]
                                     ):
-                                        imported_path, import_message = (
-                                            download_newsroom_video(
-                                                result_labels[chosen_result_label]
-                                            )
-                                        )
-                                    if imported_path:
-                                        imported_item = fixed_window_media_item(
-                                            imported_path,
-                                            str(
-                                                result_labels[chosen_result_label].get(
-                                                    "title"
+                                        result_index = row_start + column_offset
+                                        with result_columns[column_offset].container(
+                                            border=True, height="stretch"
+                                        ):
+                                            preview_image = None
+                                            if (
+                                                provider == "Reuters"
+                                                and result.get("preview_url")
+                                                and preview_token
+                                            ):
+                                                preview_image = _reuters_preview_image(
+                                                    str(result["preview_url"]),
+                                                    preview_token,
                                                 )
-                                                or imported_path.name
-                                            ),
-                                        )
-                                        if target_action == "replace":
-                                            template_slot_store[str(target_slot)] = [
-                                                imported_item
-                                            ]
-                                        else:
-                                            template_slot_store.setdefault(
-                                                str(target_slot), []
-                                            ).append(imported_item)
-                                        st.session_state.pop(
-                                            "partner_window_media_target", None
-                                        )
-                                        st.session_state.pop(
-                                            "partner_window_media_action", None
-                                        )
-                                        st.session_state[
-                                            "partner_active_video_window"
-                                        ] = str(target_slot)
-                                        st.rerun()
-                                    st.error(import_message)
+                                            if preview_image:
+                                                st.image(preview_image, width="stretch")
+                                            elif result.get("preview_url"):
+                                                st.image(
+                                                    str(result["preview_url"]),
+                                                    width="stretch",
+                                                )
+                                            else:
+                                                st.caption(
+                                                    "Thumbnail unavailable",
+                                                    text_alignment="center",
+                                                )
+                                            st.markdown(
+                                                f"**{result.get('title') or provider + ' video'}**"
+                                            )
+                                            reference = str(
+                                                result.get("usn")
+                                                or result.get("id")
+                                                or ""
+                                            )
+                                            if reference:
+                                                st.caption(reference)
+                                            if st.button(
+                                                "Use in this window",
+                                                icon=":material/add_to_queue:",
+                                                type="primary",
+                                                width="stretch",
+                                                key=(
+                                                    f"{search_key}_import_{result_index}_"
+                                                    f"{result.get('id')}"
+                                                ),
+                                                disabled=not bool(
+                                                    result.get("downloadable")
+                                                    or result.get("video_url")
+                                                ),
+                                            ):
+                                                with st.spinner(
+                                                    f"Importing the licensed {provider} video..."
+                                                ):
+                                                    imported_path, import_message = (
+                                                        download_newsroom_video(result)
+                                                    )
+                                                if imported_path:
+                                                    imported_item = fixed_window_media_item(
+                                                        imported_path,
+                                                        str(
+                                                            result.get("title")
+                                                            or imported_path.name
+                                                        ),
+                                                    )
+                                                    if target_action == "replace":
+                                                        template_slot_store[
+                                                            str(target_slot)
+                                                        ] = [imported_item]
+                                                    else:
+                                                        template_slot_store.setdefault(
+                                                            str(target_slot), []
+                                                        ).append(imported_item)
+                                                    st.session_state.pop(
+                                                        "partner_window_media_target",
+                                                        None,
+                                                    )
+                                                    st.session_state.pop(
+                                                        "partner_window_media_action",
+                                                        None,
+                                                    )
+                                                    st.session_state[
+                                                        "partner_active_video_window"
+                                                    ] = str(target_slot)
+                                                    st.session_state[
+                                                        "partner_canvas_focus_window"
+                                                    ] = str(target_slot)
+                                                    st.rerun()
+                                                st.error(import_message)
 
                 active_window = str(
                     st.session_state.get("partner_active_video_window") or "1"
@@ -6785,7 +6957,7 @@ def main() -> None:
                 "name": "Raw video",
                 "kind": "video",
                 "timing_locked": True,
-                "fit_mode": "cover",
+                "fit_mode": str(template_fit_modes.get("1") or "contain"),
                 "position_locked": True,
                 "lock_aspect": False,
                 "deletable": False,
@@ -6860,7 +7032,11 @@ def main() -> None:
                         "kind": str(first_slot_item["kind"]),
                         "timing_locked": True,
                         "position_locked": True,
-                        "fit_mode": "cover",
+                        "fit_mode": str(
+                            template_fit_modes.get(
+                                slot_id.rsplit("_", 1)[-1], "contain"
+                            )
+                        ),
                         "deletable": False,
                         "src": str(first_slot_item["src"]),
                         "video_src": str(first_slot_item["video_src"]),
@@ -7783,7 +7959,9 @@ def main() -> None:
                         "id": f"{slot_id}:{slot_cursor:.3f}",
                         "path": str(slot_path),
                         "media_type": slot_type,
-                        "fit_mode": "cover",
+                        "fit_mode": str(
+                            template_fit_modes.get(str(slot_number)) or "contain"
+                        ),
                         "start": slot_cursor,
                         "duration": visible_duration,
                         **slot_geometry,
@@ -8262,6 +8440,24 @@ def main() -> None:
             template_canvas_result = overlay_layout_editor(
                 images=unified_canvas_images,
                 layout=unified_canvas_layout,
+                selected_id=(
+                    "source"
+                    if str(
+                        st.session_state.get("partner_active_video_window") or "1"
+                    )
+                    == "1"
+                    else "window_slot_"
+                    + str(st.session_state.get("partner_active_video_window"))
+                ),
+                focus_id=(
+                    ""
+                    if not st.session_state.get("partner_canvas_focus_window")
+                    else "source"
+                    if str(st.session_state.get("partner_canvas_focus_window"))
+                    == "1"
+                    else "window_slot_"
+                    + str(st.session_state.get("partner_canvas_focus_window"))
+                ),
                 background="",
                 video_duration=editor_video_duration,
                 spatial_only=True,
@@ -8825,6 +9021,7 @@ def main() -> None:
                     ),
                     template_layout=template_layout,
                     template_geometry=template_geometry,
+                    template_fit_modes=template_fit_modes,
                     raw_audio_settings=raw_audio_settings_for_export,
                 )
             if output:

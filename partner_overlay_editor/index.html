@@ -296,17 +296,17 @@
     .save-button { min-width:92px; border-radius:999px; }
     #toggleAdvanced,#toggleTimeline { background:#202631; }
     .preview-meta { margin-left:0; background:transparent; border:0; color:#969fad; }
-    .timing-card { order:2; padding:9px 11px; border-radius:12px; background:#171c25; }
-    .editor-workspace { order:3; gap:12px; }
+    .element-label { order:2; display:flex; align-items:center; justify-content:space-between; color:#d8dde6; font-size:11px; font-weight:800; }
+    .element-label span { color:#8f98a7; font-size:9px; font-weight:500; }
+    .strip { order:3; padding:0 1px 3px; }
+    .timing-card { order:4; padding:9px 11px; border-radius:12px; background:#171c25; }
+    .editor-workspace { order:5; gap:12px; }
     .canvas-viewport {
       padding:18px; border:1px solid #272d38; border-radius:16px;
       background:radial-gradient(circle at 50% 35%,#202631 0%,#0b0e14 70%);
     }
     #stage { border-radius:14px; border-color:#454c59; box-shadow:0 22px 54px rgba(0,0,0,.42); }
     .side-panel { border-radius:13px; background:#181d26; }
-    .element-label { order:4; display:flex; align-items:center; justify-content:space-between; color:#d8dde6; font-size:11px; font-weight:800; }
-    .element-label span { color:#8f98a7; font-size:9px; font-weight:500; }
-    .strip { order:5; padding:0 1px 3px; }
     .chip { flex-basis:166px; border-radius:11px; background:#191e27; }
     .chip.selected { border-color:#ff5968; background:#2b2027; }
     .sequence-panel { order:6; margin:0; padding:10px 12px; border-radius:13px; background:#111620; }
@@ -414,7 +414,7 @@
     <div id="markSummary" class="mark-summary">No sections have been removed from the original video.</div>
   </section>
   <div class="hint editor-help">Select an element on the canvas or below. Preview shows its real timing and audio.</div>
-  <div class="element-label">Scene elements <span>Select an item to edit it</span></div>
+  <div class="element-label">Media switcher <span>Select media to make it active on the canvas</span></div>
   <div id="imageStrip" class="strip"></div>
   <div id="timingCard" class="timing-card">
     <div class="timing-top">
@@ -492,6 +492,7 @@
     let pendingTrimSyncSignature = "";
     let sourcePlayhead = 0;
     let editedPlayhead = 0;
+    let mediaFocusId = null;
     let sourceCutSelectionStart = 0;
     let sourceCutSelectionEnd = 5;
     let sourceCutDrag = null;
@@ -722,6 +723,14 @@
     function selectImage(id) {
       if (previewing) stopCompositionPreview();
       selectedId = String(id);
+      const selectedImage = imageFor(selectedId);
+      mediaFocusId = (
+        selectedImage && (
+          selectedImage.kind === "video" ||
+          String(selectedImage.id).startsWith("window_slot_") ||
+          String(selectedImage.id) === "source"
+        )
+      ) ? selectedId : null;
       renderStage();
       renderLayers();
       renderInspector();
@@ -935,16 +944,23 @@
           tile = createStageTile(item.id);
           stage.appendChild(tile);
         }
-        const containsMedia = String(image.fit_mode || "").startsWith("contain");
+        const focusActive = (
+          !previewing && mediaFocusId !== null &&
+          String(item.id) === String(mediaFocusId)
+        );
+        const focusMode = !previewing && mediaFocusId !== null;
+        const containsMedia = focusActive || String(image.fit_mode || "").startsWith("contain");
         tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${containsMedia ? " contain-media" : ""}${image.position_locked ? " position-locked" : ""}${image.decorative ? " decorative" : ""}`;
         tile.dataset.id = String(item.id);
         Object.assign(tile.style, {
-          display: visibleIds.has(String(item.id)) ? "block" : "none",
-          left:`${item.x*100}%`,
-          top:`${item.y*100}%`,
-          width:`${item.w*100}%`,
-          height:`${item.h*100}%`,
-          zIndex:item.z
+          display: focusMode
+            ? (focusActive ? "block" : "none")
+            : (visibleIds.has(String(item.id)) ? "block" : "none"),
+          left: focusActive ? "0" : `${item.x*100}%`,
+          top: focusActive ? "0" : `${item.y*100}%`,
+          width: focusActive ? "100%" : `${item.w*100}%`,
+          height: focusActive ? "100%" : `${item.h*100}%`,
+          zIndex: focusActive ? 999 : item.z
         });
         const isSource = String(item.id) === "source";
         const sourcePosition = previewing && isSource
@@ -972,7 +988,26 @@
 
     function renderStrip() {
       strip.innerHTML = "";
-      args.images.forEach(image => {
+      const switcherImages = args.images.filter(image => (
+        image.kind === "video" ||
+        String(image.id).startsWith("window_slot_") ||
+        String(image.id) === "source"
+      ));
+      if (switcherImages.length > 1) {
+        const composition = document.createElement("div");
+        composition.className = `chip${mediaFocusId === null ? " selected" : ""}`;
+        const templateImage = args.images.find(image => (
+          String(image.id) === "window_template_frame"
+        ));
+        composition.innerHTML = `<div class="chip-thumb"><img src="${templateImage?.src || switcherImages[0]?.src || ""}"></div><div class="chip-copy"><div class="chip-name">Composition</div><div class="chip-time">Complete template</div></div>`;
+        composition.addEventListener("click", () => {
+          if (previewing) stopCompositionPreview();
+          mediaFocusId = null;
+          renderAll();
+        });
+        strip.appendChild(composition);
+      }
+      switcherImages.forEach(image => {
         const item = layout.find(value => String(value.id) === String(image.id));
         if (!item) return;
         const chip = document.createElement("div");
@@ -1838,7 +1873,20 @@
             : existing;
         });
       }
-      if(!args.images.some(image=>String(image.id)===String(selectedId))) selectedId=args.images[0]?.id??null;
+      const requestedSelectedId = String(args.selected_id || "");
+      if (
+        requestedSelectedId &&
+        args.images.some(image => String(image.id) === requestedSelectedId)
+      ) {
+        selectedId = requestedSelectedId;
+      } else if(!args.images.some(image=>String(image.id)===String(selectedId))) {
+        selectedId=args.images[0]?.id??null;
+      }
+      const requestedFocusId = String(args.focus_id || "");
+      mediaFocusId = (
+        requestedFocusId &&
+        args.images.some(image => String(image.id) === requestedFocusId)
+      ) ? requestedFocusId : null;
       renderAll();
     });
     const editorShell = document.querySelector(".editor-shell");

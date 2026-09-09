@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.09.16"
+APP_BUILD_ID = "Editor-2026.09.09.17"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -225,7 +225,6 @@ def choose_window_template(template_label: str) -> None:
         return
     st.session_state["partner_window_template"] = template_label
     st.session_state["partner_canvas_active_trim_target"] = "source"
-    st.session_state["partner_floating_target_window"] = f"{template_label}:1"
     st.session_state.pop("partner_window_media_target", None)
     st.session_state.pop("partner_window_media_action", None)
     st.session_state.pop("partner_template_canvas_layout", None)
@@ -237,14 +236,6 @@ def choose_window_template(template_label: str) -> None:
 def request_publish_workspace() -> None:
     """Open the Publish tab on the rerun triggered by a shortcut button."""
     st.session_state["partner_open_publish_workspace"] = True
-
-
-def request_floating_media_workspace(template_label: str, slot_number: int) -> None:
-    """Open the floating uploader for a specific fixed template window."""
-    st.session_state["partner_focus_floating_media"] = True
-    st.session_state["partner_floating_target_window"] = (
-        f"{template_label}:{slot_number}"
-    )
 
 
 def select_window_media_target(
@@ -5993,9 +5984,6 @@ def main() -> None:
         )
         selected_slots = list(selected_template_config["slots"])
         st.session_state.setdefault("partner_canvas_active_trim_target", "source")
-        st.session_state.setdefault(
-            "partner_floating_target_window", f"{selected_template_label}:1"
-        )
         # Fixed templates always preserve the complete frame in every window.
         template_fit_modes = {
             str(slot_number): "contain"
@@ -6015,14 +6003,6 @@ def main() -> None:
                     st.caption("WINDOW 1 · LEFT")
                     st.markdown("**Primary video**")
                     st.caption(source_path.name)
-                    st.button(
-                        "Add floating image(s)",
-                        icon=":material/filter_none:",
-                        width="stretch",
-                        key=f"partner_open_floating_media_{selected_template_label}_1",
-                        on_click=request_floating_media_workspace,
-                        args=(selected_template_label, 1),
-                    )
 
                 for slot_number in range(2, len(selected_slots) + 1):
                     slot_key = str(slot_number)
@@ -6069,8 +6049,8 @@ def main() -> None:
                                 icon=":material/filter_none:",
                                 width="stretch",
                                 key=f"partner_open_floating_media_{selected_template_label}_{slot_number}",
-                                on_click=request_floating_media_workspace,
-                                args=(selected_template_label, slot_number),
+                                on_click=select_window_media_target,
+                                args=(selected_template_label, slot_number, "floating"),
                             )
                         else:
                             st.markdown("**Empty frame**")
@@ -6089,8 +6069,8 @@ def main() -> None:
                                 icon=":material/filter_none:",
                                 width="stretch",
                                 key=f"partner_open_floating_media_{selected_template_label}_{slot_number}",
-                                on_click=request_floating_media_workspace,
-                                args=(selected_template_label, slot_number),
+                                on_click=select_window_media_target,
+                                args=(selected_template_label, slot_number, "floating"),
                             )
 
                 target_value = str(
@@ -6102,27 +6082,36 @@ def main() -> None:
                     target_action = str(
                         st.session_state.get("partner_window_media_action") or "add"
                     )
+                    floating_image_mode = target_action == "floating"
                     with st.container(border=True):
                         st.markdown(
-                            f"**{'Replace' if target_action == 'replace' else 'Add media to'} "
+                            f"**{'Add floating image(s) to' if floating_image_mode else 'Replace media in' if target_action == 'replace' else 'Add media to'} "
                             f"window {target_slot}**"
                         )
-                        media_source = st.segmented_control(
-                            "Media source",
-                            ["Upload", "Reuters", "ANI"],
-                            default="Upload",
-                            key=(
-                                f"partner_window_source_{selected_template_label}_"
-                                f"{target_slot}_{target_action}"
-                            ),
-                        )
+                        media_source = "Upload"
+                        if not floating_image_mode:
+                            media_source = st.segmented_control(
+                                "Media source",
+                                ["Upload", "Reuters", "ANI"],
+                                default="Upload",
+                                key=(
+                                    f"partner_window_source_{selected_template_label}_"
+                                    f"{target_slot}_{target_action}"
+                                ),
+                            )
                         if media_source == "Upload":
                             slot_uploads = st.file_uploader(
-                                "Upload videos or images",
-                                type=[
-                                    "png", "jpg", "jpeg", "webp", "mp4", "mov",
-                                    "m4v", "webm", "mkv",
-                                ],
+                                "Upload floating image(s)"
+                                if floating_image_mode
+                                else "Upload videos or images",
+                                type=(
+                                    ["png", "jpg", "jpeg", "webp"]
+                                    if floating_image_mode
+                                    else [
+                                        "png", "jpg", "jpeg", "webp", "mp4", "mov",
+                                        "m4v", "webm", "mkv",
+                                    ]
+                                ),
                                 accept_multiple_files=True,
                                 key=(
                                     f"partner_direct_window_upload_{selected_template_label}_"
@@ -6150,7 +6139,7 @@ def main() -> None:
                                             saved_media, uploaded_media.name
                                         )
                                     )
-                                if target_action == "replace":
+                                if target_action in {"replace", "floating"}:
                                     template_slot_store[str(target_slot)] = imported_items
                                 else:
                                     template_slot_store.setdefault(
@@ -6166,6 +6155,12 @@ def main() -> None:
                                     st.session_state[
                                         "partner_canvas_active_trim_target"
                                     ] = f"window_slot_{target_slot}"
+                                elif floating_image_mode and st.session_state.get(
+                                    "partner_canvas_active_trim_target"
+                                ) == f"window_slot_{target_slot}":
+                                    st.session_state[
+                                        "partner_canvas_active_trim_target"
+                                    ] = "source"
                                 st.rerun()
                         else:
                             provider = str(media_source)
@@ -6395,28 +6390,13 @@ def main() -> None:
             "start": float(raw_audio_start),
             "end": float(raw_audio_end),
         }
-        floating_focus_requested = bool(
-            st.session_state.pop("partner_focus_floating_media", False)
-        )
+        st.session_state.pop("partner_focus_floating_media", None)
+        st.session_state.pop("partner_floating_target_window", None)
         media_panel = media_branding_slot.expander(
             "Media and branding",
             icon=":material/add_photo_alternate:",
-            expanded=floating_focus_requested,
+            expanded=False,
         )
-        if floating_focus_requested:
-            floating_target_value = str(
-                st.session_state.get("partner_floating_target_window") or ""
-            )
-            floating_target_label = "the selected window"
-            if ":" in floating_target_value:
-                floating_target_label = (
-                    f"Window {floating_target_value.rsplit(':', 1)[-1]}"
-                )
-            media_panel.info(
-                f"Floating media uploader opened below for {floating_target_label}. "
-                "The media will fill that template window and will not become a "
-                "video-editing target."
-            )
         media_panel.caption(
             "The top PNG and slug banner are separate canvas layers. Move and "
             "resize either one independently."
@@ -6465,10 +6445,7 @@ def main() -> None:
                     + 1
                 )
                 st.rerun()
-        template_columns = media_panel.columns(
-            [0.42, 0.58], vertical_alignment="top"
-        )
-        template_header_upload = template_columns[0].file_uploader(
+        template_header_upload = media_panel.file_uploader(
             "Top PNG",
             type=["png"],
             key=(
@@ -6477,18 +6454,11 @@ def main() -> None:
             ),
             help="This PNG occupies the left 20% of the top strip.",
         )
-        template_loop_uploads = template_columns[1].file_uploader(
-            "Floating images and videos",
-            type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "m4v", "webm", "mkv"],
-            accept_multiple_files=True,
-            key=(
-                "partner_template_loop_uploads_"
-                f"{st.session_state['partner_template_loop_upload_generation']}"
-            ),
-            help="Images and videos play in order and repeat for the complete output.",
-        )
+        # Floating images now belong to window 2 or 3 and are uploaded from
+        # that window's own action. The generic free-overlay uploader is retired.
+        template_loop_uploads: List[object] = []
         template_photo_seconds = media_panel.number_input(
-            "Default seconds per floating item",
+            "Seconds per window image",
             min_value=0.5,
             max_value=60.0,
             value=5.0,
@@ -6629,10 +6599,7 @@ def main() -> None:
             st.session_state["partner_template_loop_items"] = loop_items
             hidden_template_components.discard("images")
 
-        template_loop_items = [
-            dict(item) for item in st.session_state.get("partner_template_loop_items", [])
-            if Path(str(item.get("path") or "")).is_file()
-        ]
+        template_loop_items: List[Dict[str, object]] = []
         if template_loop_items:
             media_panel.markdown("**Floating media order**")
             media_panel.caption(
@@ -6734,20 +6701,6 @@ def main() -> None:
         window_slot_boxes = [
             _normalised_box(tuple(box)) for box in selected_template_config["slots"]
         ]
-        floating_target_value = str(
-            st.session_state.get("partner_floating_target_window") or ""
-        )
-        floating_target_slot = 0
-        if floating_target_value.startswith(f"{selected_template_label}:"):
-            try:
-                floating_target_slot = int(floating_target_value.rsplit(":", 1)[1])
-            except ValueError:
-                floating_target_slot = 0
-        floating_target_box = (
-            window_slot_boxes[floating_target_slot - 1]
-            if 1 <= floating_target_slot <= len(window_slot_boxes)
-            else {"x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80}
-        )
         window_frame_path = window_template_frame_asset(selected_template_label)
         source_slot = window_slot_boxes[0]
         default_canvas_layout = [
@@ -6781,10 +6734,6 @@ def main() -> None:
             default_canvas_layout.append(
                 {"id": "header_image", "x": 0.01, "y": 0.01, "w": 0.20, "h": 0.18, "z": 3, "start": float(top_png_start), "duration": float(top_png_duration)}
             )
-        if template_loop_paths_for_editor and "images" not in hidden_template_components:
-            default_canvas_layout.append(
-                {"id": "images", **floating_target_box, "z": 1, "start": 0.0, "duration": editor_video_duration}
-            )
         if selected_logo_path and "logo" not in hidden_template_components:
             default_canvas_layout.append(
                 {"id": "logo", "x": 0.84, "y": 0.035, "w": 0.13, "h": 0.11, "z": 5, "start": 0.0, "duration": editor_video_duration}
@@ -6806,7 +6755,7 @@ def main() -> None:
             for item in default_canvas_layout
             if (
                 str(item["id"]).startswith("window_")
-                or str(item["id"]) in {"source", "images"}
+                or str(item["id"]) == "source"
             )
         }
         for canvas_item in current_canvas_layout:
@@ -7756,11 +7705,9 @@ def main() -> None:
             and "images" not in hidden_template_components
         ):
             panel_count = 1
-            image_geometry = dict(floating_target_box)
-            image_geometry.update(template_geometry.get("images", {}))
-            # Floating media is locked to the selected window; stale canvas
-            # geometry from an earlier target must not move it elsewhere.
-            image_geometry.update(floating_target_box)
+            image_geometry = template_geometry.get(
+                "images", {"x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80}
+            )
             seconds_per_image = float(template_photo_seconds)
             for panel_index in range(panel_count):
                 panel_time = 0.0

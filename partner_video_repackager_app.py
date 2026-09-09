@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.09.14"
+APP_BUILD_ID = "Editor-2026.09.09.15"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -224,8 +224,7 @@ def choose_window_template(template_label: str) -> None:
     if template_label not in WINDOW_TEMPLATES:
         return
     st.session_state["partner_window_template"] = template_label
-    st.session_state["partner_active_video_window"] = "1"
-    st.session_state.pop("partner_canvas_focus_window", None)
+    st.session_state["partner_canvas_active_trim_target"] = "source"
     st.session_state.pop("partner_window_media_target", None)
     st.session_state.pop("partner_window_media_action", None)
     st.session_state.pop("partner_template_canvas_layout", None)
@@ -252,13 +251,6 @@ def select_window_media_target(
         f"{template_label}:{slot_number}"
     )
     st.session_state["partner_window_media_action"] = action
-    st.session_state["partner_active_video_window"] = str(slot_number)
-
-
-def select_active_video_window(slot_number: int) -> None:
-    """Switch the visible trim controls to the requested template window."""
-    st.session_state["partner_active_video_window"] = str(slot_number)
-    st.session_state["partner_canvas_focus_window"] = str(slot_number)
 
 
 def clear_window_media(template_label: str, slot_number: int) -> None:
@@ -274,11 +266,10 @@ def clear_window_media(template_label: str, slot_number: int) -> None:
     ):
         st.session_state.pop("partner_window_media_target", None)
         st.session_state.pop("partner_window_media_action", None)
-    if str(st.session_state.get("partner_canvas_focus_window") or "") == str(
-        slot_number
+    if st.session_state.get("partner_canvas_active_trim_target") == (
+        f"window_slot_{slot_number}"
     ):
-        st.session_state.pop("partner_canvas_focus_window", None)
-        st.session_state["partner_active_video_window"] = "1"
+        st.session_state["partner_canvas_active_trim_target"] = "source"
     st.session_state["partner_template_canvas_generation"] = (
         int(st.session_state.get("partner_template_canvas_generation", 0)) + 1
     )
@@ -299,7 +290,9 @@ def fixed_window_media_item(path: Path, name: str) -> Dict[str, object]:
         "media_type": media_type,
         "clip_duration": clip_duration,
         "trim_mode": "keep",
-        "ranges": [(0.0, clip_duration)] if media_type == "video" else [],
+        # An empty keep list means the complete clip. Storing a synthetic
+        # full-length range made a newly selected window look pre-edited.
+        "ranges": [],
         "use_clip_audio": False,
     }
 
@@ -397,7 +390,7 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 overlay_layout_editor = components.declare_component(
-    "partner_overlay_timeline_editor_v6",
+    "partner_overlay_timeline_editor_v7",
     path=str(OVERLAY_EDITOR_DIR),
 )
 
@@ -5997,49 +5990,26 @@ def main() -> None:
             selected_template_label, {}
         )
         selected_slots = list(selected_template_config["slots"])
-        st.session_state.setdefault("partner_active_video_window", "1")
-        all_window_fit_modes = st.session_state.setdefault(
-            "partner_window_fit_modes", {}
-        )
-        template_fit_modes = all_window_fit_modes.setdefault(
-            selected_template_label, {}
-        )
-        for slot_number in range(1, len(selected_slots) + 1):
-            template_fit_modes.setdefault(str(slot_number), "contain")
+        st.session_state.setdefault("partner_canvas_active_trim_target", "source")
+        # Fixed templates always preserve the complete frame in every window.
+        template_fit_modes = {
+            str(slot_number): "contain"
+            for slot_number in range(1, len(selected_slots) + 1)
+        }
 
         if len(selected_slots) > 1:
             with st.container(border=True):
                 st.markdown("**Template windows**")
                 st.caption(
                     "The primary video is fixed in the left window. Add a local, "
-                    "Reuters or ANI video—or an image—to any remaining window."
+                    "Reuters or ANI video—or an image—to any remaining window. "
+                    "Every window automatically shows the complete media frame."
                 )
                 slot_columns = st.columns(len(selected_slots))
                 with slot_columns[0].container(border=True, height="stretch"):
                     st.caption("WINDOW 1 · LEFT")
-                    primary_thumbnail = video_preview_data_url(
-                        str(source_path), source_path.stat().st_mtime_ns
-                    )
-                    if primary_thumbnail:
-                        st.image(primary_thumbnail, width="stretch")
-                    else:
-                        st.caption("Video thumbnail unavailable")
                     st.markdown("**Primary video**")
                     st.caption(source_path.name)
-                    primary_fit_label = st.segmented_control(
-                        "Window 1 fit",
-                        ["Fit full video", "Fill frame"],
-                        default=(
-                            "Fill frame"
-                            if template_fit_modes.get("1") == "cover"
-                            else "Fit full video"
-                        ),
-                        key=f"partner_window_fit_{selected_template_label}_1",
-                        label_visibility="collapsed",
-                    )
-                    template_fit_modes["1"] = (
-                        "cover" if primary_fit_label == "Fill frame" else "contain"
-                    )
 
                 for slot_number in range(2, len(selected_slots) + 1):
                     slot_key = str(slot_number)
@@ -6054,69 +6024,18 @@ def main() -> None:
                     ):
                         st.caption(f"WINDOW {slot_number}")
                         if slot_items:
-                            thumbnail_item = slot_items[0]
-                            thumbnail_path = Path(str(thumbnail_item["path"]))
-                            thumbnail_src = (
-                                video_preview_data_url(
-                                    str(thumbnail_path),
-                                    thumbnail_path.stat().st_mtime_ns,
-                                )
-                                if thumbnail_item.get("media_type") == "video"
-                                else image_preview_data_url(
-                                    str(thumbnail_path),
-                                    thumbnail_path.stat().st_mtime_ns,
-                                )
-                            )
-                            if thumbnail_src:
-                                st.image(thumbnail_src, width="stretch")
-                            else:
-                                st.caption("Media thumbnail unavailable")
                             item_names = [str(item.get("name") or "Media") for item in slot_items]
                             st.markdown(
                                 f"**{len(slot_items)} media item"
                                 f"{'s' if len(slot_items) != 1 else ''}**"
                             )
                             st.caption(" · ".join(item_names[:2]))
-                            slot_fit_label = st.segmented_control(
-                                f"Window {slot_number} fit",
-                                ["Fit full video", "Fill frame"],
-                                default=(
-                                    "Fill frame"
-                                    if template_fit_modes.get(slot_key) == "cover"
-                                    else "Fit full video"
-                                ),
-                                key=(
-                                    f"partner_window_fit_{selected_template_label}_"
-                                    f"{slot_number}"
-                                ),
-                                label_visibility="collapsed",
-                            )
-                            template_fit_modes[slot_key] = (
-                                "cover"
-                                if slot_fit_label == "Fill frame"
-                                else "contain"
-                            )
-                            window_videos = [
-                                item
-                                for item in slot_items
-                                if item.get("media_type") == "video"
-                            ]
-                            if window_videos:
-                                window_audio_enabled = st.toggle(
-                                    "Use window video audio",
-                                    value=any(
-                                        bool(item.get("use_clip_audio"))
-                                        for item in window_videos
-                                    ),
-                                    key=(
-                                        f"partner_window_audio_{selected_template_label}_"
-                                        f"{slot_number}"
-                                    ),
-                                )
-                                for window_video in window_videos:
-                                    window_video["use_clip_audio"] = bool(
-                                        window_audio_enabled
-                                    )
+                            for slot_item in slot_items:
+                                if slot_item.get("media_type") == "video":
+                                    # Secondary window audio is intentionally
+                                    # muted; the app's main audio controls stay
+                                    # the single source of truth.
+                                    slot_item["use_clip_audio"] = False
                             action_columns = st.columns(3)
                             action_columns[0].button(
                                 "Add",
@@ -6230,10 +6149,13 @@ def main() -> None:
                                 st.session_state[signature_key] = action_signature
                                 st.session_state.pop("partner_window_media_target", None)
                                 st.session_state.pop("partner_window_media_action", None)
-                                st.session_state["partner_active_video_window"] = str(target_slot)
-                                st.session_state["partner_canvas_focus_window"] = str(
-                                    target_slot
-                                )
+                                if any(
+                                    item.get("media_type") == "video"
+                                    for item in imported_items
+                                ):
+                                    st.session_state[
+                                        "partner_canvas_active_trim_target"
+                                    ] = f"window_slot_{target_slot}"
                                 st.rerun()
                         else:
                             provider = str(media_source)
@@ -6374,11 +6296,8 @@ def main() -> None:
                                                         None,
                                                     )
                                                     st.session_state[
-                                                        "partner_active_video_window"
-                                                    ] = str(target_slot)
-                                                    st.session_state[
-                                                        "partner_canvas_focus_window"
-                                                    ] = str(target_slot)
+                                                        "partner_canvas_active_trim_target"
+                                                    ] = f"window_slot_{target_slot}"
                                                     st.rerun()
                                                 st.error(import_message)
 
@@ -8381,6 +8300,21 @@ def main() -> None:
                 if editable_item.get("trim_mode") == "remove"
                 else "keep"
             )
+            # Older builds stored a full-length keep range and could clamp a
+            # secondary range to the primary video's duration. Both represent
+            # stale/no-op state, so do not show them as edits for this clip.
+            if editable_mode == "keep" and len(editable_ranges) == 1:
+                only_range = editable_ranges[0]
+                starts_at_zero = float(only_range["start"]) <= 0.05
+                range_end = float(only_range["end"])
+                is_full_clip = abs(range_end - editable_duration) <= 0.05
+                is_primary_duration_leak = (
+                    abs(range_end - float(raw_video_duration)) <= 0.05
+                    and abs(editable_duration - float(raw_video_duration)) > 0.05
+                )
+                if starts_at_zero and (is_full_clip or is_primary_duration_leak):
+                    editable_ranges = []
+                    editable_item["ranges"] = []
             secondary_trim_targets.append(
                 {
                     "id": slot_id,

@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.09.17"
+APP_BUILD_ID = "Editor-2026.09.09.18"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -268,6 +268,52 @@ def clear_window_media(template_label: str, slot_number: int) -> None:
     st.session_state["partner_template_canvas_generation"] = (
         int(st.session_state.get("partner_template_canvas_generation", 0)) + 1
     )
+
+
+def reorder_window_media(
+    template_label: str, slot_number: int, item_id: str, offset: int
+) -> None:
+    """Move one item within a fixed window's playback order."""
+    all_items = st.session_state.setdefault("partner_window_slot_items", {})
+    template_items = all_items.setdefault(template_label, {})
+    slot_key = str(slot_number)
+    values = list(template_items.get(slot_key, []))
+    current_index = next(
+        (
+            index
+            for index, item in enumerate(values)
+            if str(item.get("id") or "") == item_id
+        ),
+        -1,
+    )
+    destination = current_index + offset
+    if 0 <= current_index < len(values) and 0 <= destination < len(values):
+        values[current_index], values[destination] = (
+            values[destination],
+            values[current_index],
+        )
+        template_items[slot_key] = values
+
+
+def remove_window_media_item(
+    template_label: str, slot_number: int, item_id: str
+) -> None:
+    """Remove one image or video without clearing the rest of its window."""
+    all_items = st.session_state.setdefault("partner_window_slot_items", {})
+    template_items = all_items.setdefault(template_label, {})
+    slot_key = str(slot_number)
+    retained_items = [
+        item
+        for item in template_items.get(slot_key, [])
+        if str(item.get("id") or "") != item_id
+    ]
+    template_items[slot_key] = retained_items
+    if (
+        st.session_state.get("partner_canvas_active_trim_target")
+        == f"window_slot_{slot_number}"
+        and not any(item.get("media_type") == "video" for item in retained_items)
+    ):
+        st.session_state["partner_canvas_active_trim_target"] = "source"
 
 
 def fixed_window_media_item(path: Path, name: str) -> Dict[str, object]:
@@ -6044,6 +6090,89 @@ def main() -> None:
                                 on_click=clear_window_media,
                                 args=(selected_template_label, slot_number),
                             )
+                            with st.expander(
+                                f"View and arrange ({len(slot_items)})",
+                                expanded=False,
+                            ):
+                                st.caption(
+                                    "Items play from top to bottom, then repeat. "
+                                    "Use the arrows to set their order."
+                                )
+                                for item_index, slot_item in enumerate(slot_items):
+                                    item_id = str(slot_item.get("id") or item_index)
+                                    item_path = Path(str(slot_item.get("path") or ""))
+                                    with st.container(border=True):
+                                        if (
+                                            slot_item.get("media_type") == "image"
+                                            and item_path.is_file()
+                                        ):
+                                            preview_columns = st.columns(
+                                                [0.28, 0.72],
+                                                vertical_alignment="center",
+                                            )
+                                            preview_columns[0].image(
+                                                str(item_path), width="stretch"
+                                            )
+                                            preview_columns[1].markdown(
+                                                f"**{item_index + 1}. "
+                                                f"{slot_item.get('name') or item_path.name}**"
+                                            )
+                                        else:
+                                            st.markdown(
+                                                f"**{item_index + 1}. "
+                                                f"{slot_item.get('name') or item_path.name}**"
+                                            )
+                                            st.caption("Video")
+                                        order_columns = st.columns(3)
+                                        order_columns[0].button(
+                                            "Up",
+                                            icon=":material/arrow_upward:",
+                                            width="stretch",
+                                            disabled=item_index == 0,
+                                            key=(
+                                                f"partner_window_item_up_"
+                                                f"{selected_template_label}_{slot_number}_{item_id}"
+                                            ),
+                                            on_click=reorder_window_media,
+                                            args=(
+                                                selected_template_label,
+                                                slot_number,
+                                                item_id,
+                                                -1,
+                                            ),
+                                        )
+                                        order_columns[1].button(
+                                            "Down",
+                                            icon=":material/arrow_downward:",
+                                            width="stretch",
+                                            disabled=item_index == len(slot_items) - 1,
+                                            key=(
+                                                f"partner_window_item_down_"
+                                                f"{selected_template_label}_{slot_number}_{item_id}"
+                                            ),
+                                            on_click=reorder_window_media,
+                                            args=(
+                                                selected_template_label,
+                                                slot_number,
+                                                item_id,
+                                                1,
+                                            ),
+                                        )
+                                        order_columns[2].button(
+                                            "Remove",
+                                            icon=":material/close:",
+                                            width="stretch",
+                                            key=(
+                                                f"partner_window_item_remove_"
+                                                f"{selected_template_label}_{slot_number}_{item_id}"
+                                            ),
+                                            on_click=remove_window_media_item,
+                                            args=(
+                                                selected_template_label,
+                                                slot_number,
+                                                item_id,
+                                            ),
+                                        )
                             st.button(
                                 "Add floating image(s)",
                                 icon=":material/filter_none:",

@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.09.12"
+APP_BUILD_ID = "Editor-2026.09.09.13"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -237,6 +237,11 @@ def choose_window_template(template_label: str) -> None:
 def request_publish_workspace() -> None:
     """Open the Publish tab on the rerun triggered by a shortcut button."""
     st.session_state["partner_open_publish_workspace"] = True
+
+
+def request_floating_media_workspace() -> None:
+    """Open the media panel with the floating uploader visually highlighted."""
+    st.session_state["partner_focus_floating_media"] = True
 
 
 def select_window_media_target(
@@ -393,7 +398,7 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 overlay_layout_editor = components.declare_component(
-    "partner_overlay_timeline_editor_v5",
+    "partner_overlay_timeline_editor_v6",
     path=str(OVERLAY_EDITOR_DIR),
 )
 
@@ -5344,13 +5349,11 @@ def main() -> None:
         # Keep a stable block in the page tree. st.empty() clears its previous
         # child at the beginning of every rerun, which made the large editor
         # iframe visibly disappear while controls and previews were rebuilt.
-        # Media selection belongs immediately above the canvas so editors can
-        # switch sources without scrolling to a separate secondary-video area.
-        window_assignment_slot = st.container()
         video_canvas_slot = st.container()
         # These are persistent multi-element sections. Unlike st.empty(),
         # containers grow with their children, so Streamlit Cloud recalculates
         # the full document height and the page can scroll to the final control.
+        window_assignment_slot = st.container()
         editor_controls_slot = st.container()
         transcript_slot = st.container()
         voice_slot = st.container()
@@ -6017,9 +6020,6 @@ def main() -> None:
                     "Reuters or ANI video—or an image—to any remaining window."
                 )
                 slot_columns = st.columns(len(selected_slots))
-                primary_active = (
-                    str(st.session_state.get("partner_active_video_window")) == "1"
-                )
                 with slot_columns[0].container(border=True, height="stretch"):
                     st.caption("WINDOW 1 · LEFT")
                     primary_thumbnail = video_preview_data_url(
@@ -6029,19 +6029,8 @@ def main() -> None:
                         st.image(primary_thumbnail, width="stretch")
                     else:
                         st.caption("Video thumbnail unavailable")
-                    st.markdown(
-                        f"**{'Editing · ' if primary_active else ''}Primary video**"
-                    )
+                    st.markdown("**Primary video**")
                     st.caption(source_path.name)
-                    st.button(
-                        "Edit primary video",
-                        icon=":material/movie_edit:",
-                        width="stretch",
-                        type="primary" if primary_active else "secondary",
-                        key=f"partner_edit_primary_{selected_template_label}",
-                        on_click=select_active_video_window,
-                        args=(1,),
-                    )
                     primary_fit_label = st.segmented_control(
                         "Window 1 fit",
                         ["Fit full video", "Fill frame"],
@@ -6065,10 +6054,6 @@ def main() -> None:
                         if Path(str(item.get("path") or "")).is_file()
                     ]
                     template_slot_store[slot_key] = slot_items
-                    is_active = (
-                        str(st.session_state.get("partner_active_video_window"))
-                        == slot_key
-                    )
                     with slot_columns[slot_number - 1].container(
                         border=True, height="stretch"
                     ):
@@ -6093,21 +6078,10 @@ def main() -> None:
                                 st.caption("Media thumbnail unavailable")
                             item_names = [str(item.get("name") or "Media") for item in slot_items]
                             st.markdown(
-                                f"**{'Editing · ' if is_active else ''}"
-                                f"{len(slot_items)} media item"
+                                f"**{len(slot_items)} media item"
                                 f"{'s' if len(slot_items) != 1 else ''}**"
                             )
                             st.caption(" · ".join(item_names[:2]))
-                            if any(item.get("media_type") == "video" for item in slot_items):
-                                st.button(
-                                    "Edit video",
-                                    icon=":material/movie_edit:",
-                                    width="stretch",
-                                    type="primary" if is_active else "secondary",
-                                    key=f"partner_edit_window_{selected_template_label}_{slot_number}",
-                                    on_click=select_active_video_window,
-                                    args=(slot_number,),
-                                )
                             slot_fit_label = st.segmented_control(
                                 f"Window {slot_number} fit",
                                 ["Fit full video", "Fill frame"],
@@ -6127,6 +6101,27 @@ def main() -> None:
                                 if slot_fit_label == "Fill frame"
                                 else "contain"
                             )
+                            window_videos = [
+                                item
+                                for item in slot_items
+                                if item.get("media_type") == "video"
+                            ]
+                            if window_videos:
+                                window_audio_enabled = st.toggle(
+                                    "Use window video audio",
+                                    value=any(
+                                        bool(item.get("use_clip_audio"))
+                                        for item in window_videos
+                                    ),
+                                    key=(
+                                        f"partner_window_audio_{selected_template_label}_"
+                                        f"{slot_number}"
+                                    ),
+                                )
+                                for window_video in window_videos:
+                                    window_video["use_clip_audio"] = bool(
+                                        window_audio_enabled
+                                    )
                             action_columns = st.columns(3)
                             action_columns[0].button(
                                 "Add",
@@ -6161,6 +6156,18 @@ def main() -> None:
                                 on_click=select_window_media_target,
                                 args=(selected_template_label, slot_number, "add"),
                             )
+
+                st.button(
+                    "Add floating image(s) instead",
+                    icon=":material/filter_none:",
+                    width="stretch",
+                    key=f"partner_open_floating_media_{selected_template_label}",
+                    on_click=request_floating_media_workspace,
+                    help=(
+                        "Floating images sit above the template and do not become "
+                        "video-editing targets."
+                    ),
+                )
 
                 target_value = str(
                     st.session_state.get("partner_window_media_target") or ""
@@ -6380,102 +6387,6 @@ def main() -> None:
                                                     st.rerun()
                                                 st.error(import_message)
 
-                active_window = str(
-                    st.session_state.get("partner_active_video_window") or "1"
-                )
-                if active_window == "1":
-                    st.caption(
-                        "Editing window 1 · Use Adjust or Timeline below for the primary video."
-                    )
-                elif active_window.isdigit():
-                    active_slot_number = int(active_window)
-                    active_slot_videos = [
-                        item
-                        for item in template_slot_store.get(active_window, [])
-                        if item.get("media_type") == "video"
-                        and Path(str(item.get("path") or "")).is_file()
-                    ]
-                    if active_slot_videos:
-                        st.markdown(f"**Edit window {active_slot_number} video**")
-                        video_choices = {
-                            str(item.get("name") or f"Video {index + 1}"): item
-                            for index, item in enumerate(active_slot_videos)
-                        }
-                        selected_secondary_label = st.selectbox(
-                            "Video to edit",
-                            list(video_choices),
-                            key=(
-                                f"partner_secondary_editor_{selected_template_label}_"
-                                f"{active_slot_number}"
-                            ),
-                        )
-                        selected_secondary = video_choices[selected_secondary_label]
-                        secondary_duration = max(
-                            0.1,
-                            float(selected_secondary.get("clip_duration") or 0.1),
-                        )
-                        trim_mode_label = st.segmented_control(
-                            "Edit mode",
-                            ["Keep sections", "Remove sections"],
-                            default=(
-                                "Remove sections"
-                                if selected_secondary.get("trim_mode") == "remove"
-                                else "Keep sections"
-                            ),
-                            key=f"partner_secondary_mode_{selected_secondary['id']}",
-                        )
-                        selected_secondary["trim_mode"] = (
-                            "remove"
-                            if trim_mode_label == "Remove sections"
-                            else "keep"
-                        )
-                        new_range = st.slider(
-                            "Section from → to",
-                            0.0,
-                            float(secondary_duration),
-                            (0.0, min(float(secondary_duration), 5.0)),
-                            0.1,
-                            key=f"partner_secondary_range_{selected_secondary['id']}",
-                        )
-                        if st.button(
-                            f"Add {trim_mode_label.lower()}",
-                            key=f"partner_secondary_add_range_{selected_secondary['id']}",
-                        ):
-                            ranges = list(selected_secondary.get("ranges") or [])
-                            if selected_secondary.get("trim_mode") == "keep" and ranges == [
-                                (0.0, secondary_duration)
-                            ]:
-                                ranges = []
-                            ranges.append((float(new_range[0]), float(new_range[1])))
-                            selected_secondary["ranges"] = ranges
-                        for range_index, (range_start, range_end) in enumerate(
-                            list(selected_secondary.get("ranges") or [])
-                        ):
-                            range_columns = st.columns([0.84, 0.16])
-                            range_columns[0].caption(
-                                f"{range_index + 1}. {compact_time(range_start)}–"
-                                f"{compact_time(range_end)}"
-                            )
-                            if range_columns[1].button(
-                                "Remove",
-                                key=(
-                                    f"partner_secondary_remove_"
-                                    f"{selected_secondary['id']}_{range_index}"
-                                ),
-                            ):
-                                selected_secondary["ranges"] = [
-                                    value
-                                    for index, value in enumerate(
-                                        selected_secondary.get("ranges") or []
-                                    )
-                                    if index != range_index
-                                ]
-                        selected_secondary["use_clip_audio"] = st.toggle(
-                            "Use this clip's audio",
-                            value=bool(selected_secondary.get("use_clip_audio")),
-                            key=f"partner_secondary_audio_{selected_secondary['id']}",
-                        )
-
     with editor_controls_slot:
         template_layout = "fixed_window"
         st.button(
@@ -6560,11 +6471,19 @@ def main() -> None:
             "start": float(raw_audio_start),
             "end": float(raw_audio_end),
         }
+        floating_focus_requested = bool(
+            st.session_state.pop("partner_focus_floating_media", False)
+        )
         media_panel = media_branding_slot.expander(
             "Media and branding",
             icon=":material/add_photo_alternate:",
-            expanded=False,
+            expanded=floating_focus_requested,
         )
+        if floating_focus_requested:
+            media_panel.info(
+                "Floating media uploader opened below. These items will not "
+                "appear as video-editing targets in the canvas."
+            )
         media_panel.caption(
             "The top PNG and slug banner are separate canvas layers. Move and "
             "resize either one independently."
@@ -6956,6 +6875,7 @@ def main() -> None:
                 "id": "source",
                 "name": "Raw video",
                 "kind": "video",
+                "editable_video": True,
                 "timing_locked": True,
                 "fit_mode": str(template_fit_modes.get("1") or "contain"),
                 "position_locked": True,
@@ -7025,11 +6945,25 @@ def main() -> None:
                 )
             if playlist:
                 first_slot_item = playlist[0]
+                editable_playlist_item = next(
+                    (item for item in playlist if item.get("kind") == "video"),
+                    None,
+                )
                 canvas_images.append(
                     {
                         "id": slot_id,
                         "name": slot_id.replace("_", " ").title(),
                         "kind": str(first_slot_item["kind"]),
+                        "editable_video": any(
+                            item.get("media_type") == "video"
+                            for item in slot_items
+                        ),
+                        "editor_src": str(
+                            (editable_playlist_item or first_slot_item)["src"]
+                        ),
+                        "editor_name": str(
+                            (editable_playlist_item or first_slot_item)["name"]
+                        ),
                         "timing_locked": True,
                         "position_locked": True,
                         "fit_mode": str(
@@ -8431,32 +8365,59 @@ def main() -> None:
                         latest_voiceover_path.stat().st_mtime_ns,
                     )
 
+        secondary_trim_targets: List[Dict[str, object]] = []
+        for slot_id, slot_items in active_fixed_slot_items.items():
+            editable_item = next(
+                (
+                    item
+                    for item in slot_items
+                    if item.get("media_type") == "video"
+                    and Path(str(item.get("path") or "")).is_file()
+                ),
+                None,
+            )
+            if not editable_item:
+                continue
+            editable_duration = max(
+                0.1, float(editable_item.get("clip_duration") or 0.1)
+            )
+            editable_ranges = [
+                {"start": float(start), "end": float(end)}
+                for start, end in editable_item.get("ranges") or []
+            ]
+            editable_mode = (
+                "remove"
+                if editable_item.get("trim_mode") == "remove"
+                else "keep"
+            )
+            secondary_trim_targets.append(
+                {
+                    "id": slot_id,
+                    "item_id": str(editable_item.get("id") or ""),
+                    "name": str(
+                        editable_item.get("name")
+                        or slot_id.replace("_", " ").title()
+                    ),
+                    "duration": editable_duration,
+                    "cuts": editable_ranges if editable_mode == "remove" else [],
+                    "keeps": editable_ranges if editable_mode == "keep" else [],
+                    "trim_mode": editable_mode,
+                }
+            )
+
         with video_canvas_slot:
             st.caption(
-                "Preview and arrange the video here. Use Remove sections or Keep "
-                "sections on the original-video bar below the canvas; multiple kept "
-                "ranges are joined automatically in timeline order."
+                "The canvas always shows the complete template. Select a video "
+                "thumbnail above it to make Keep sections / Remove sections edit "
+                "that video. Image-only windows are not editing targets."
             )
             template_canvas_result = overlay_layout_editor(
                 images=unified_canvas_images,
                 layout=unified_canvas_layout,
-                selected_id=(
-                    "source"
-                    if str(
-                        st.session_state.get("partner_active_video_window") or "1"
-                    )
-                    == "1"
-                    else "window_slot_"
-                    + str(st.session_state.get("partner_active_video_window"))
-                ),
-                focus_id=(
-                    ""
-                    if not st.session_state.get("partner_canvas_focus_window")
-                    else "source"
-                    if str(st.session_state.get("partner_canvas_focus_window"))
-                    == "1"
-                    else "window_slot_"
-                    + str(st.session_state.get("partner_canvas_focus_window"))
+                trim_targets=secondary_trim_targets,
+                active_trim_target=str(
+                    st.session_state.get("partner_canvas_active_trim_target")
+                    or "source"
                 ),
                 background="",
                 video_duration=editor_video_duration,
@@ -8595,6 +8556,64 @@ def main() -> None:
                 )
                 edited_source_duration = sum(
                     end - start for start, end in kept_ranges
+                )
+
+            # The same in-canvas Keep/Remove editor can target a secondary or
+            # tertiary video. Image-only windows never emit a trim target.
+            for secondary_payload in template_canvas_result.get(
+                "secondary_trims", []
+            ):
+                if not isinstance(secondary_payload, dict):
+                    continue
+                target_id = str(secondary_payload.get("id") or "")
+                if not target_id.startswith("window_slot_"):
+                    continue
+                slot_key = target_id.rsplit("_", 1)[-1]
+                item_id = str(secondary_payload.get("item_id") or "")
+                target_item = next(
+                    (
+                        item
+                        for item in template_slot_store.get(slot_key, [])
+                        if str(item.get("id") or "") == item_id
+                        and item.get("media_type") == "video"
+                    ),
+                    None,
+                )
+                if not target_item:
+                    continue
+                target_duration = max(
+                    0.1, float(target_item.get("clip_duration") or 0.1)
+                )
+                target_mode = (
+                    "remove"
+                    if secondary_payload.get("trim_mode") == "remove"
+                    else "keep"
+                )
+                payload_ranges = secondary_payload.get(
+                    "cuts" if target_mode == "remove" else "keeps", []
+                )
+                normalised_ranges = normalise_cut_ranges(
+                    [
+                        value
+                        for value in payload_ranges
+                        if isinstance(value, dict)
+                    ],
+                    target_duration,
+                )
+                target_item["trim_mode"] = target_mode
+                target_item["ranges"] = [
+                    (float(start), float(end))
+                    for start, end in normalised_ranges
+                ]
+
+            active_trim_target = str(
+                template_canvas_result.get("active_trim_target") or "source"
+            )
+            if active_trim_target == "source" or active_trim_target.startswith(
+                "window_slot_"
+            ):
+                st.session_state["partner_canvas_active_trim_target"] = (
+                    active_trim_target
                 )
 
             deletion_event = str(

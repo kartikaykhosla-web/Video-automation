@@ -488,11 +488,13 @@
     let sourceCuts = [];
     let sourceKeeps = [];
     let trimMode = "remove";
+    let secondaryTrimStates = new Map();
+    let activeTrimTargetId = "source";
+    let trimTargetInitialized = false;
     let trimRevision = 0;
     let pendingTrimSyncSignature = "";
     let sourcePlayhead = 0;
     let editedPlayhead = 0;
-    let mediaFocusId = null;
     let sourceCutSelectionStart = 0;
     let sourceCutSelectionEnd = 5;
     let sourceCutDrag = null;
@@ -594,6 +596,17 @@
       start: Number(range.start) || 0,
       end: Number(range.end) || 0
     }));
+    const serialisedSecondaryTrims = () => [...secondaryTrimStates.values()].map(
+      target => ({
+        id: String(target.id),
+        item_id: String(target.item_id || ""),
+        name: String(target.name || "Secondary video"),
+        duration: Math.max(.1, Number(target.duration) || .1),
+        cuts: serialisedCuts(target.cuts || []),
+        keeps: serialisedKeeps(target.keeps || []),
+        trim_mode: target.trim_mode === "keep" ? "keep" : "remove"
+      })
+    );
     const trimSignature = (cuts, keeps, mode) => JSON.stringify({
       cuts: serialisedCuts(cuts),
       keeps: serialisedKeeps(keeps),
@@ -639,7 +652,9 @@
           source_keeps: serialisedKeeps(),
           trim_mode: trimMode,
           trim_revision: trimRevision,
-          cut_event: cutEvent
+          cut_event: cutEvent,
+          active_trim_target: activeTrimTargetId,
+          secondary_trims: serialisedSecondaryTrims()
         },
         dataType: "json"
       });
@@ -724,18 +739,19 @@
       if (previewing) stopCompositionPreview();
       selectedId = String(id);
       const selectedImage = imageFor(selectedId);
-      mediaFocusId = (
-        selectedImage && (
-          selectedImage.kind === "video" ||
-          String(selectedImage.id).startsWith("window_slot_") ||
-          String(selectedImage.id) === "source"
-        )
-      ) ? selectedId : null;
+      if (selectedImage?.editable_video === true || selectedId === "source") {
+        activeTrimTargetId = selectedId;
+        const limit = trimTargetDuration();
+        sourceCutSelectionStart = 0;
+        sourceCutSelectionEnd = Math.min(5, limit);
+        setSourceCutMessage();
+      }
       renderStage();
       renderLayers();
       renderInspector();
       renderStrip();
       renderTiming();
+      renderSequence();
     }
 
     function renderLayers() {
@@ -944,23 +960,16 @@
           tile = createStageTile(item.id);
           stage.appendChild(tile);
         }
-        const focusActive = (
-          !previewing && mediaFocusId !== null &&
-          String(item.id) === String(mediaFocusId)
-        );
-        const focusMode = !previewing && mediaFocusId !== null;
-        const containsMedia = focusActive || String(image.fit_mode || "").startsWith("contain");
+        const containsMedia = String(image.fit_mode || "").startsWith("contain");
         tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${containsMedia ? " contain-media" : ""}${image.position_locked ? " position-locked" : ""}${image.decorative ? " decorative" : ""}`;
         tile.dataset.id = String(item.id);
         Object.assign(tile.style, {
-          display: focusMode
-            ? (focusActive ? "block" : "none")
-            : (visibleIds.has(String(item.id)) ? "block" : "none"),
-          left: focusActive ? "0" : `${item.x*100}%`,
-          top: focusActive ? "0" : `${item.y*100}%`,
-          width: focusActive ? "100%" : `${item.w*100}%`,
-          height: focusActive ? "100%" : `${item.h*100}%`,
-          zIndex: focusActive ? 999 : item.z
+          display: visibleIds.has(String(item.id)) ? "block" : "none",
+          left:`${item.x*100}%`,
+          top:`${item.y*100}%`,
+          width:`${item.w*100}%`,
+          height:`${item.h*100}%`,
+          zIndex:item.z
         });
         const isSource = String(item.id) === "source";
         const sourcePosition = previewing && isSource
@@ -989,34 +998,18 @@
     function renderStrip() {
       strip.innerHTML = "";
       const switcherImages = args.images.filter(image => (
-        image.kind === "video" ||
-        String(image.id).startsWith("window_slot_") ||
-        String(image.id) === "source"
+        image.editable_video === true || String(image.id) === "source"
       ));
-      if (switcherImages.length > 1) {
-        const composition = document.createElement("div");
-        composition.className = `chip${mediaFocusId === null ? " selected" : ""}`;
-        const templateImage = args.images.find(image => (
-          String(image.id) === "window_template_frame"
-        ));
-        composition.innerHTML = `<div class="chip-thumb"><img src="${templateImage?.src || switcherImages[0]?.src || ""}"></div><div class="chip-copy"><div class="chip-name">Composition</div><div class="chip-time">Complete template</div></div>`;
-        composition.addEventListener("click", () => {
-          if (previewing) stopCompositionPreview();
-          mediaFocusId = null;
-          renderAll();
-        });
-        strip.appendChild(composition);
-      }
       switcherImages.forEach(image => {
         const item = layout.find(value => String(value.id) === String(image.id));
         if (!item) return;
         const chip = document.createElement("div");
         chip.className = `chip${String(image.id) === String(selectedId) ? " selected" : ""}`;
-        chip.innerHTML = `<div class="chip-thumb"><img src="${image.src}"><span class="chip-video"></span></div><div class="chip-copy"><div class="chip-name"></div><div class="chip-time"></div></div>`;
+        chip.innerHTML = `<div class="chip-thumb"><img src="${image.editor_src || image.src}"><span class="chip-video"></span></div><div class="chip-copy"><div class="chip-name"></div><div class="chip-time"></div></div>`;
         const videoBadge = chip.querySelector(".chip-video");
-        if (image.kind === "video") videoBadge.textContent = "▶";
+        if (image.editable_video === true || image.kind === "video") videoBadge.textContent = "▶";
         else videoBadge.remove();
-        chip.querySelector(".chip-name").textContent = image.name || "Visual";
+        chip.querySelector(".chip-name").textContent = image.editor_name || image.name || "Video";
         chip.querySelector(".chip-time").textContent = item ? `${formatTime(item.start)} · ${item.duration.toFixed(1)}s` : "";
         chip.addEventListener("click", () => selectImage(image.id));
         strip.appendChild(chip);
@@ -1043,14 +1036,21 @@
 
     function renderSequence() {
       const sourceLength = sourceDuration();
-      sourceScrubber.max = String(editedSourceDuration());
+      const activeDuration = trimTargetDuration();
+      sourceScrubber.max = String(
+        activeTrimTargetId === "source" ? editedSourceDuration() : activeDuration
+      );
       sourceScrubber.value = String(
-        clamp(editedPlayhead, 0, editedSourceDuration())
+        activeTrimTargetId === "source"
+          ? clamp(editedPlayhead, 0, editedSourceDuration())
+          : clamp(sourceCutSelectionStart, 0, activeDuration)
       );
-      sourceTime.textContent = (
-        `${formatTime(editedPlayhead)} / ${formatTime(editedSourceDuration())}`
-        + ` · source ${formatTime(sourcePlayhead)}`
-      );
+      sourceTime.textContent = activeTrimTargetId === "source"
+        ? (
+          `${formatTime(editedPlayhead)} / ${formatTime(editedSourceDuration())}`
+          + ` · source ${formatTime(sourcePlayhead)}`
+        )
+        : `${activeTrimName()} · ${formatTime(sourceCutSelectionStart)} / ${formatTime(activeDuration)}`;
       const renderSegments = (host, predicate, className) => {
         host.innerHTML = "";
         layout.filter(item => predicate(imageFor(item.id))).forEach(item => {
@@ -1477,30 +1477,63 @@
       return `${Date.now()}:${action}:${Math.random()}`;
     }
 
+    const activeSecondaryTrim = () => secondaryTrimStates.get(
+      String(activeTrimTargetId)
+    ) || null;
+    const activeTrimName = () => activeTrimTargetId === "source"
+      ? "Primary video"
+      : String(activeSecondaryTrim()?.name || "Secondary video");
+    const activeTrimMode = () => activeTrimTargetId === "source"
+      ? trimMode
+      : (activeSecondaryTrim()?.trim_mode === "keep" ? "keep" : "remove");
+    const setActiveTrimMode = mode => {
+      const cleanMode = mode === "keep" ? "keep" : "remove";
+      if (activeTrimTargetId === "source") trimMode = cleanMode;
+      else if (activeSecondaryTrim()) activeSecondaryTrim().trim_mode = cleanMode;
+    };
+    const trimTargetDuration = () => activeTrimTargetId === "source"
+      ? sourceDuration()
+      : Math.max(.1, Number(activeSecondaryTrim()?.duration) || .1);
+
     function validSourceCuts(cuts) {
       const removed = mergeSourceCuts(cuts).reduce(
         (total, cut) => total + Math.max(0, cut.end - cut.start), 0
       );
-      return sourceDuration() - removed >= .1;
+      return trimTargetDuration() - removed >= .1;
     }
 
-    const activeTrimRanges = () => trimMode === "keep" ? sourceKeeps : sourceCuts;
+    const activeTrimRanges = () => {
+      if (activeTrimTargetId === "source") {
+        return activeTrimMode() === "keep" ? sourceKeeps : sourceCuts;
+      }
+      const target = activeSecondaryTrim();
+      if (!target) return [];
+      return activeTrimMode() === "keep" ? target.keeps : target.cuts;
+    };
     const setActiveTrimRanges = ranges => {
-      if (trimMode === "keep") sourceKeeps = mergeSourceCuts(ranges);
-      else sourceCuts = mergeSourceCuts(ranges);
+      const merged = mergeSourceCuts(ranges);
+      if (activeTrimTargetId === "source") {
+        if (activeTrimMode() === "keep") sourceKeeps = merged;
+        else sourceCuts = merged;
+        return;
+      }
+      const target = activeSecondaryTrim();
+      if (!target) return;
+      if (activeTrimMode() === "keep") target.keeps = merged;
+      else target.cuts = merged;
     };
 
     function setSourceCutMessage(message = "", isError = false) {
       sourceCutHelp.textContent = message || (
-        trimMode === "keep"
-          ? "Drag across the bar to select a section to keep. Multiple kept sections are joined in chronological order."
-          : "Drag across the bar to select the unwanted part. Timestamps refer to the original uploaded video."
+        activeTrimMode() === "keep"
+          ? `Drag across the bar to keep sections from ${activeTrimName()}. Multiple sections are joined in chronological order.`
+          : `Drag across the bar to remove unwanted parts from ${activeTrimName()}.`
       );
       sourceCutHelp.classList.toggle("source-cut-error", Boolean(isError));
     }
 
     function setSourceCutSelection(start, end, seek = false) {
-      const limit = sourceDuration();
+      const limit = trimTargetDuration();
       let nextStart = clamp(Number(start) || 0, 0, Math.max(0, limit - .1));
       let nextEnd = clamp(Number(end) || 0, .1, limit);
       if (nextEnd < nextStart) [nextStart, nextEnd] = [nextEnd, nextStart];
@@ -1508,12 +1541,12 @@
       if (nextEnd - nextStart < .1) nextStart = Math.max(0, nextEnd - .1);
       sourceCutSelectionStart = nextStart;
       sourceCutSelectionEnd = nextEnd;
-      if (seek) seekSourcePreview(nextStart);
+      if (seek) seekTrimPreview(nextStart);
       renderSourceCutSelection();
     }
 
     function renderSourceCutSelection() {
-      const limit = sourceDuration();
+      const limit = trimTargetDuration();
       sourceCutSelectionStart = clamp(sourceCutSelectionStart, 0, Math.max(0, limit - .1));
       sourceCutSelectionEnd = clamp(sourceCutSelectionEnd, .1, limit);
       if (sourceCutSelectionEnd - sourceCutSelectionStart < .1) {
@@ -1532,19 +1565,19 @@
       ]);
       removeSourceSelection.disabled = (
         sourceCutSelectionEnd - sourceCutSelectionStart < .1 ||
-        (trimMode === "remove" && !validSourceCuts(candidate))
+        (activeTrimMode() === "remove" && !validSourceCuts(candidate))
       );
     }
 
     function renderSourceCutEditor() {
-      const limit = sourceDuration();
+      const limit = trimTargetDuration();
       const displayedTrimRanges = activeTrimRanges();
-      const keepMode = trimMode === "keep";
+      const keepMode = activeTrimMode() === "keep";
       document.getElementById("removeTrimMode").classList.toggle("active", !keepMode);
       document.getElementById("keepTrimMode").classList.toggle("active", keepMode);
       sourceCutTitle.textContent = keepMode
-        ? "Keep sections from the original video"
-        : "Remove a section from the original video";
+        ? `Keep sections from ${activeTrimName()}`
+        : `Remove a section from ${activeTrimName()}`;
       removeSourceSelection.textContent = keepMode
         ? "✓ Keep selected area"
         : "✂ Remove selected area";
@@ -1602,24 +1635,27 @@
 
     function sourceCutTimeFromPointer(event) {
       const rect = sourceCutTrack.getBoundingClientRect();
-      return clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * sourceDuration();
+      return clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * trimTargetDuration();
     }
 
-    function seekSourcePreview(value) {
-      sourcePlayhead = clamp(Number(value) || 0, 0, sourceDuration());
-      const sourceTile = stage.querySelector('.tile[data-id="source"]');
-      const sourceVideo = sourceTile?.querySelector("video.tile-video");
-      if (sourceVideo && sourceVideo.readyState >= 1) {
+    function seekTrimPreview(value) {
+      const targetTime = clamp(Number(value) || 0, 0, trimTargetDuration());
+      if (activeTrimTargetId === "source") sourcePlayhead = targetTime;
+      const targetTile = stage.querySelector(
+        `.tile[data-id="${CSS.escape(String(activeTrimTargetId))}"]`
+      );
+      const targetVideo = targetTile?.querySelector("video.tile-video");
+      if (targetVideo && targetVideo.readyState >= 1) {
         try {
-          sourceVideo.currentTime = Math.min(
-            sourcePlayhead,
-            Math.max(0, (sourceVideo.duration || sourcePlayhead) - .03)
+          targetVideo.currentTime = Math.min(
+            targetTime,
+            Math.max(0, (targetVideo.duration || targetTime) - .03)
           );
         } catch (_) {}
       }
       sourceTime.textContent = (
-        `${formatTime(editedPlayhead)} / ${formatTime(editedSourceDuration())}`
-        + ` · source ${formatTime(sourcePlayhead)}`
+        `${activeTrimName()} · ${formatTime(targetTime)} / `
+        + `${formatTime(trimTargetDuration())}`
       );
     }
 
@@ -1639,13 +1675,16 @@
       }
       renderSequence();
     }
-    sourceScrubber.addEventListener("input", event => seekEditedPreview(event.target.value));
+    sourceScrubber.addEventListener("input", event => {
+      if (activeTrimTargetId === "source") seekEditedPreview(event.target.value);
+      else seekTrimPreview(event.target.value);
+    });
     sourceCutTrack.addEventListener("pointerdown", event => {
       event.preventDefault();
       const rect = sourceCutTrack.getBoundingClientRect();
       const pointerTime = sourceCutTimeFromPointer(event);
-      const startX = rect.left + sourceCutSelectionStart / sourceDuration() * rect.width;
-      const endX = rect.left + sourceCutSelectionEnd / sourceDuration() * rect.width;
+      const startX = rect.left + sourceCutSelectionStart / trimTargetDuration() * rect.width;
+      const endX = rect.left + sourceCutSelectionEnd / trimTargetDuration() * rect.width;
       const handleRadius = Math.max(12, Math.min(22, rect.width * .025));
       let mode = "new";
       if (Math.abs(event.clientX - startX) <= handleRadius) mode = "start";
@@ -1660,9 +1699,9 @@
       };
       sourceCutTrack.setPointerCapture(event.pointerId);
       if (mode === "new") {
-        setSourceCutSelection(pointerTime, Math.min(sourceDuration(), pointerTime + .1), true);
+        setSourceCutSelection(pointerTime, Math.min(trimTargetDuration(), pointerTime + .1), true);
       } else {
-        seekSourcePreview(pointerTime);
+        seekTrimPreview(pointerTime);
       }
     });
     const applySourceCutPointerTime = currentTime => {
@@ -1675,7 +1714,7 @@
       } else if (drag.mode === "move") {
         const width = drag.initialEnd - drag.initialStart;
         const requestedStart = drag.initialStart + currentTime - drag.anchor;
-        const nextStart = clamp(requestedStart, 0, sourceDuration() - width);
+        const nextStart = clamp(requestedStart, 0, trimTargetDuration() - width);
         setSourceCutSelection(nextStart, nextStart + width, false);
       } else {
         setSourceCutSelection(
@@ -1718,13 +1757,13 @@
         ...activeTrimRanges(),
         {start: sourceCutSelectionStart, end: sourceCutSelectionEnd}
       ]);
-      if (trimMode === "remove" && !validSourceCuts(candidate)) {
+      if (activeTrimMode() === "remove" && !validSourceCuts(candidate)) {
         setSourceCutMessage("That selection would remove the complete original video. Leave at least 0.1 seconds.", true);
         return;
       }
       setActiveTrimRanges(candidate);
       setSourceCutMessage(
-        trimMode === "keep"
+        activeTrimMode() === "keep"
           ? "Selected area added to the kept sequence."
           : "Selected area removed from the original video."
       );
@@ -1732,13 +1771,13 @@
       commit([], "", sourceCutEvent("add"));
     });
     document.getElementById("removeTrimMode").addEventListener("click", () => {
-      trimMode = "remove";
+      setActiveTrimMode("remove");
       setSourceCutMessage();
       renderSequence();
       commit([], "", sourceCutEvent("mode"));
     });
     document.getElementById("keepTrimMode").addEventListener("click", () => {
-      trimMode = "keep";
+      setActiveTrimMode("keep");
       setSourceCutMessage();
       renderSequence();
       commit([], "", sourceCutEvent("mode"));
@@ -1778,6 +1817,38 @@
       // byte size—must control layout resets so freehand geometry is preserved.
       const nextSignature=(nextArgs.images||[]).map(image=>`${image.id}:${image.kind||"image"}`).join("|");
       args=nextArgs;
+      const nextSecondaryTrimStates = new Map();
+      (Array.isArray(args.trim_targets) ? args.trim_targets : []).forEach(target => {
+        const id = String(target?.id || "");
+        if (!id) return;
+        const existing = secondaryTrimStates.get(id);
+        if (existing && String(existing.item_id || "") === String(target.item_id || "")) {
+          existing.name = String(target.name || existing.name || "Secondary video");
+          existing.duration = Math.max(.1, Number(target.duration) || existing.duration || .1);
+          nextSecondaryTrimStates.set(id, existing);
+          return;
+        }
+        nextSecondaryTrimStates.set(id, {
+          id,
+          item_id: String(target.item_id || ""),
+          name: String(target.name || "Secondary video"),
+          duration: Math.max(.1, Number(target.duration) || .1),
+          cuts: mergeSourceCuts(Array.isArray(target.cuts) ? target.cuts : []),
+          keeps: mergeSourceCuts(Array.isArray(target.keeps) ? target.keeps : []),
+          trim_mode: target.trim_mode === "remove" ? "remove" : "keep"
+        });
+      });
+      secondaryTrimStates = nextSecondaryTrimStates;
+      const requestedTrimTarget = String(args.active_trim_target || "");
+      if (
+        !trimTargetInitialized &&
+        (requestedTrimTarget === "source" || secondaryTrimStates.has(requestedTrimTarget))
+      ) activeTrimTargetId = requestedTrimTarget;
+      trimTargetInitialized = true;
+      if (
+        activeTrimTargetId !== "source" &&
+        !secondaryTrimStates.has(String(activeTrimTargetId))
+      ) activeTrimTargetId = "source";
       const hasDurableCuts = Object.prototype.hasOwnProperty.call(
         durableState || {}, "source_cuts"
       );
@@ -1882,11 +1953,6 @@
       } else if(!args.images.some(image=>String(image.id)===String(selectedId))) {
         selectedId=args.images[0]?.id??null;
       }
-      const requestedFocusId = String(args.focus_id || "");
-      mediaFocusId = (
-        requestedFocusId &&
-        args.images.some(image => String(image.id) === requestedFocusId)
-      ) ? requestedFocusId : null;
       renderAll();
     });
     const editorShell = document.querySelector(".editor-shell");

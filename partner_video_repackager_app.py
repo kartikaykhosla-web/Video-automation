@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.09.15"
+APP_BUILD_ID = "Editor-2026.09.09.16"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -225,6 +225,7 @@ def choose_window_template(template_label: str) -> None:
         return
     st.session_state["partner_window_template"] = template_label
     st.session_state["partner_canvas_active_trim_target"] = "source"
+    st.session_state["partner_floating_target_window"] = f"{template_label}:1"
     st.session_state.pop("partner_window_media_target", None)
     st.session_state.pop("partner_window_media_action", None)
     st.session_state.pop("partner_template_canvas_layout", None)
@@ -238,9 +239,12 @@ def request_publish_workspace() -> None:
     st.session_state["partner_open_publish_workspace"] = True
 
 
-def request_floating_media_workspace() -> None:
-    """Open the media panel with the floating uploader visually highlighted."""
+def request_floating_media_workspace(template_label: str, slot_number: int) -> None:
+    """Open the floating uploader for a specific fixed template window."""
     st.session_state["partner_focus_floating_media"] = True
+    st.session_state["partner_floating_target_window"] = (
+        f"{template_label}:{slot_number}"
+    )
 
 
 def select_window_media_target(
@@ -390,7 +394,7 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 overlay_layout_editor = components.declare_component(
-    "partner_overlay_timeline_editor_v7",
+    "partner_overlay_timeline_editor_v8",
     path=str(OVERLAY_EDITOR_DIR),
 )
 
@@ -5224,7 +5228,6 @@ def main() -> None:
                                     "partner_timeline_audio_start",
                                     "partner_timeline_audio_volume",
                                     "partner_timeline_audio_mode",
-                                    "partner_window_slot_items",
                                     "partner_template_name_cards",
                                     "partner_template_canvas_layout",
                                 ):
@@ -5268,7 +5271,6 @@ def main() -> None:
                 st.session_state.pop("partner_timeline_audio_start", None)
                 st.session_state.pop("partner_timeline_audio_volume", None)
                 st.session_state.pop("partner_timeline_audio_mode", None)
-                st.session_state.pop("partner_window_slot_items", None)
                 st.session_state.pop("partner_template_name_cards", None)
                 st.session_state.pop("partner_template_canvas_layout", None)
                 st.success(f"Uploaded: {source_path.name}")
@@ -5991,6 +5993,9 @@ def main() -> None:
         )
         selected_slots = list(selected_template_config["slots"])
         st.session_state.setdefault("partner_canvas_active_trim_target", "source")
+        st.session_state.setdefault(
+            "partner_floating_target_window", f"{selected_template_label}:1"
+        )
         # Fixed templates always preserve the complete frame in every window.
         template_fit_modes = {
             str(slot_number): "contain"
@@ -6010,6 +6015,14 @@ def main() -> None:
                     st.caption("WINDOW 1 · LEFT")
                     st.markdown("**Primary video**")
                     st.caption(source_path.name)
+                    st.button(
+                        "Add floating image(s)",
+                        icon=":material/filter_none:",
+                        width="stretch",
+                        key=f"partner_open_floating_media_{selected_template_label}_1",
+                        on_click=request_floating_media_workspace,
+                        args=(selected_template_label, 1),
+                    )
 
                 for slot_number in range(2, len(selected_slots) + 1):
                     slot_key = str(slot_number)
@@ -6036,26 +6049,27 @@ def main() -> None:
                                     # muted; the app's main audio controls stay
                                     # the single source of truth.
                                     slot_item["use_clip_audio"] = False
-                            action_columns = st.columns(3)
+                            action_columns = st.columns(2)
                             action_columns[0].button(
-                                "Add",
-                                icon=":material/add:",
-                                key=f"partner_add_window_{selected_template_label}_{slot_number}",
-                                on_click=select_window_media_target,
-                                args=(selected_template_label, slot_number, "add"),
-                            )
-                            action_columns[1].button(
                                 "Replace",
                                 icon=":material/swap_horiz:",
                                 key=f"partner_replace_window_{selected_template_label}_{slot_number}",
                                 on_click=select_window_media_target,
                                 args=(selected_template_label, slot_number, "replace"),
                             )
-                            action_columns[2].button(
+                            action_columns[1].button(
                                 "Clear",
                                 icon=":material/delete:",
                                 key=f"partner_clear_window_{selected_template_label}_{slot_number}",
                                 on_click=clear_window_media,
+                                args=(selected_template_label, slot_number),
+                            )
+                            st.button(
+                                "Add floating image(s)",
+                                icon=":material/filter_none:",
+                                width="stretch",
+                                key=f"partner_open_floating_media_{selected_template_label}_{slot_number}",
+                                on_click=request_floating_media_workspace,
                                 args=(selected_template_label, slot_number),
                             )
                         else:
@@ -6070,18 +6084,14 @@ def main() -> None:
                                 on_click=select_window_media_target,
                                 args=(selected_template_label, slot_number, "add"),
                             )
-
-                st.button(
-                    "Add floating image(s) instead",
-                    icon=":material/filter_none:",
-                    width="stretch",
-                    key=f"partner_open_floating_media_{selected_template_label}",
-                    on_click=request_floating_media_workspace,
-                    help=(
-                        "Floating images sit above the template and do not become "
-                        "video-editing targets."
-                    ),
-                )
+                            st.button(
+                                "Add floating image(s)",
+                                icon=":material/filter_none:",
+                                width="stretch",
+                                key=f"partner_open_floating_media_{selected_template_label}_{slot_number}",
+                                on_click=request_floating_media_workspace,
+                                args=(selected_template_label, slot_number),
+                            )
 
                 target_value = str(
                     st.session_state.get("partner_window_media_target") or ""
@@ -6394,9 +6404,18 @@ def main() -> None:
             expanded=floating_focus_requested,
         )
         if floating_focus_requested:
+            floating_target_value = str(
+                st.session_state.get("partner_floating_target_window") or ""
+            )
+            floating_target_label = "the selected window"
+            if ":" in floating_target_value:
+                floating_target_label = (
+                    f"Window {floating_target_value.rsplit(':', 1)[-1]}"
+                )
             media_panel.info(
-                "Floating media uploader opened below. These items will not "
-                "appear as video-editing targets in the canvas."
+                f"Floating media uploader opened below for {floating_target_label}. "
+                "The media will fill that template window and will not become a "
+                "video-editing target."
             )
         media_panel.caption(
             "The top PNG and slug banner are separate canvas layers. Move and "
@@ -6715,6 +6734,20 @@ def main() -> None:
         window_slot_boxes = [
             _normalised_box(tuple(box)) for box in selected_template_config["slots"]
         ]
+        floating_target_value = str(
+            st.session_state.get("partner_floating_target_window") or ""
+        )
+        floating_target_slot = 0
+        if floating_target_value.startswith(f"{selected_template_label}:"):
+            try:
+                floating_target_slot = int(floating_target_value.rsplit(":", 1)[1])
+            except ValueError:
+                floating_target_slot = 0
+        floating_target_box = (
+            window_slot_boxes[floating_target_slot - 1]
+            if 1 <= floating_target_slot <= len(window_slot_boxes)
+            else {"x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80}
+        )
         window_frame_path = window_template_frame_asset(selected_template_label)
         source_slot = window_slot_boxes[0]
         default_canvas_layout = [
@@ -6750,7 +6783,7 @@ def main() -> None:
             )
         if template_loop_paths_for_editor and "images" not in hidden_template_components:
             default_canvas_layout.append(
-                {"id": "images", "x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80, "z": 1, "start": 0.0, "duration": editor_video_duration}
+                {"id": "images", **floating_target_box, "z": 1, "start": 0.0, "duration": editor_video_duration}
             )
         if selected_logo_path and "logo" not in hidden_template_components:
             default_canvas_layout.append(
@@ -6771,7 +6804,10 @@ def main() -> None:
         fixed_geometry_by_id = {
             str(item["id"]): item
             for item in default_canvas_layout
-            if str(item["id"]).startswith("window_") or item["id"] == "source"
+            if (
+                str(item["id"]).startswith("window_")
+                or str(item["id"]) in {"source", "images"}
+            )
         }
         for canvas_item in current_canvas_layout:
             fixed_item = fixed_geometry_by_id.get(str(canvas_item.get("id")))
@@ -6790,6 +6826,7 @@ def main() -> None:
                 "name": "Raw video",
                 "kind": "video",
                 "editable_video": True,
+                "editor_duration": float(raw_video_duration),
                 "timing_locked": True,
                 "fit_mode": str(template_fit_modes.get("1") or "contain"),
                 "position_locked": True,
@@ -6816,9 +6853,12 @@ def main() -> None:
                 preview_path = slot_path
                 preview_duration = float(template_photo_seconds)
                 if slot_media_type == "video":
+                    measured_duration = probe_media_duration(slot_path)
                     clip_duration = max(
-                        0.1, float(slot_item.get("clip_duration") or 0.1)
+                        0.1,
+                        float(measured_duration or slot_item.get("clip_duration") or 0.1),
                     )
+                    slot_item["clip_duration"] = clip_duration
                     raw_ranges = [
                         {"start": float(start), "end": float(end)}
                         for start, end in slot_item.get("ranges") or []
@@ -6857,10 +6897,15 @@ def main() -> None:
                         "preview_volume": 1.0 if slot_item.get("use_clip_audio") else 0.0,
                     }
                 )
+            template_slot_store[slot_id.rsplit("_", 1)[-1]] = slot_items
             if playlist:
                 first_slot_item = playlist[0]
                 editable_playlist_item = next(
                     (item for item in playlist if item.get("kind") == "video"),
+                    None,
+                )
+                editor_video_item = next(
+                    (item for item in slot_items if item.get("media_type") == "video"),
                     None,
                 )
                 canvas_images.append(
@@ -6877,6 +6922,11 @@ def main() -> None:
                         ),
                         "editor_name": str(
                             (editable_playlist_item or first_slot_item)["name"]
+                        ),
+                        "editor_duration": float(
+                            editor_video_item.get("clip_duration")
+                            if editor_video_item
+                            else first_slot_item.get("duration") or editor_video_duration
                         ),
                         "timing_locked": True,
                         "position_locked": True,
@@ -6996,6 +7046,7 @@ def main() -> None:
                     "name": f"Floating media · {len(floating_playlist)} items",
                     "kind": str(first_floating["kind"]),
                     "timing_locked": True,
+                    "position_locked": True,
                     "fit_mode": "contain_transparent",
                     "deletable": True,
                     "src": str(first_floating["src"]),
@@ -7705,9 +7756,11 @@ def main() -> None:
             and "images" not in hidden_template_components
         ):
             panel_count = 1
-            image_geometry = template_geometry.get(
-                "images", {"x": 0.50, "y": 0.20, "w": 0.50, "h": 0.80}
-            )
+            image_geometry = dict(floating_target_box)
+            image_geometry.update(template_geometry.get("images", {}))
+            # Floating media is locked to the selected window; stale canvas
+            # geometry from an earlier target must not move it elsewhere.
+            image_geometry.update(floating_target_box)
             seconds_per_image = float(template_photo_seconds)
             for panel_index in range(panel_count):
                 panel_time = 0.0

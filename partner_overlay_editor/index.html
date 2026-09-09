@@ -1011,7 +1011,10 @@
         if (image.editable_video === true || image.kind === "video") videoBadge.textContent = "▶";
         else videoBadge.remove();
         chip.querySelector(".chip-name").textContent = image.editor_name || image.name || "Video";
-        chip.querySelector(".chip-time").textContent = item ? `${formatTime(item.start)} · ${item.duration.toFixed(1)}s` : "";
+        const mediaDuration = Number(image.editor_duration) || Number(item.duration) || 0;
+        chip.querySelector(".chip-time").textContent = item
+          ? `${formatTime(item.start)} · ${formatTime(mediaDuration)}`
+          : "";
         chip.addEventListener("click", () => selectImage(image.id));
         strip.appendChild(chip);
       });

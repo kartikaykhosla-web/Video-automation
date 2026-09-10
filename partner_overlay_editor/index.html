@@ -1755,12 +1755,38 @@
     };
     sourceCutTrack.addEventListener("pointerup", finishSourceCutDrag);
     sourceCutTrack.addEventListener("pointercancel", finishSourceCutDrag);
-    sourceCutStart.addEventListener("change", () => setSourceCutSelection(
-      Number(sourceCutStart.value), Number(sourceCutEnd.value), true
-    ));
-    sourceCutEnd.addEventListener("change", () => setSourceCutSelection(
-      Number(sourceCutStart.value), Number(sourceCutEnd.value), false
-    ));
+    sourceCutStart.addEventListener("change", () => {
+      const limit = trimTargetDuration();
+      const previousWidth = Math.max(
+        .1,
+        sourceCutSelectionEnd - sourceCutSelectionStart
+      );
+      const requestedStart = clamp(
+        Number(sourceCutStart.value) || 0,
+        0,
+        Math.max(0, limit - .1)
+      );
+      const nextEnd = requestedStart >= sourceCutSelectionEnd - .1
+        ? Math.min(limit, requestedStart + previousWidth)
+        : sourceCutSelectionEnd;
+      setSourceCutSelection(requestedStart, nextEnd, true);
+    });
+    sourceCutEnd.addEventListener("change", () => {
+      const limit = trimTargetDuration();
+      const previousWidth = Math.max(
+        .1,
+        sourceCutSelectionEnd - sourceCutSelectionStart
+      );
+      const requestedEnd = clamp(
+        Number(sourceCutEnd.value) || .1,
+        .1,
+        limit
+      );
+      const nextStart = requestedEnd <= sourceCutSelectionStart + .1
+        ? Math.max(0, requestedEnd - previousWidth)
+        : sourceCutSelectionStart;
+      setSourceCutSelection(nextStart, requestedEnd, false);
+    });
     removeSourceSelection.addEventListener("click", () => {
       const candidate = mergeSourceCuts([
         ...activeTrimRanges(),

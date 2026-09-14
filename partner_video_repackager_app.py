@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.14.23"
+APP_BUILD_ID = "Editor-2026.09.14.24"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -3704,10 +3704,9 @@ def export_horizontal_video(
     else:
         video_width, video_height = OUTPUT_WIDTH, OUTPUT_HEIGHT
         video_x, video_y = 0, 0
-    # Preserve the complete raw frame inside its freehand canvas box. Cropping
-    # a landscape source into a tall/narrow tile made interview text and faces
-    # appear to move outside the editor boundary.
-    source_fit_mode = str((template_fit_modes or {}).get("1") or "contain")
+    # Fill the template window by default; the per-window control can switch
+    # back to containing the complete source frame when the user prefers it.
+    source_fit_mode = str((template_fit_modes or {}).get("1") or "cover")
     if template_layout == "fixed_window" and source_fit_mode == "cover":
         video_transform = (
             f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
@@ -6060,10 +6059,10 @@ def main() -> None:
         )
         selected_slots = list(selected_template_config["slots"])
         st.session_state.setdefault("partner_canvas_active_trim_target", "source")
-        # Default to showing the complete media; each occupied window can opt
-        # into edge-to-edge cropping with Fill frame.
+        # Default every template window to edge-to-edge Fill frame. A user's
+        # explicit choice is retained by each segmented control's widget state.
         template_fit_modes = {
-            str(slot_number): "contain"
+            str(slot_number): "cover"
             for slot_number in range(1, len(selected_slots) + 1)
         }
 
@@ -6073,7 +6072,7 @@ def main() -> None:
                 st.caption(
                     "The primary video is fixed in the left window. Add a local, "
                     "Reuters or ANI video—or an image—to any remaining window. "
-                    "Every window automatically shows the complete media frame."
+                    "Every window uses Fill frame by default."
                 )
                 slot_columns = st.columns(len(selected_slots))
                 with slot_columns[0].container(border=True, height="stretch"):
@@ -6083,7 +6082,7 @@ def main() -> None:
                     primary_fit_label = st.segmented_control(
                         "Window 1 fit",
                         ["Fit full video", "Fill frame"],
-                        default="Fit full video",
+                        default="Fill frame",
                         key=f"partner_window_fit_{selected_template_label}_1",
                         label_visibility="collapsed",
                     )
@@ -6113,7 +6112,7 @@ def main() -> None:
                             slot_fit_label = st.segmented_control(
                                 f"Window {slot_number} fit",
                                 ["Fit full video", "Fill frame"],
-                                default="Fit full video",
+                                default="Fill frame",
                                 key=(
                                     f"partner_window_fit_{selected_template_label}_"
                                     f"{slot_number}"
@@ -6959,7 +6958,7 @@ def main() -> None:
                 "editable_video": True,
                 "editor_duration": float(raw_video_duration),
                 "timing_locked": True,
-                "fit_mode": str(template_fit_modes.get("1") or "contain"),
+                "fit_mode": str(template_fit_modes.get("1") or "cover"),
                 "position_locked": True,
                 "lock_aspect": False,
                 "deletable": False,
@@ -7067,7 +7066,7 @@ def main() -> None:
                         ],
                         "fit_mode": str(
                             template_fit_modes.get(
-                                slot_id.rsplit("_", 1)[-1], "contain"
+                                slot_id.rsplit("_", 1)[-1], "cover"
                             )
                         ),
                         "deletable": False,
@@ -7997,7 +7996,7 @@ def main() -> None:
                         "path": str(slot_path),
                         "media_type": slot_type,
                         "fit_mode": str(
-                            template_fit_modes.get(str(slot_number)) or "contain"
+                            template_fit_modes.get(str(slot_number)) or "cover"
                         ),
                         "start": slot_cursor,
                         "duration": visible_duration,

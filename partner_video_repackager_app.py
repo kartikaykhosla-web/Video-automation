@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.14.22"
+APP_BUILD_ID = "Editor-2026.09.14.23"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -260,7 +260,7 @@ def choose_window_template(template_label: str) -> None:
 
 def request_publish_workspace() -> None:
     """Open the Publish tab on the rerun triggered by a shortcut button."""
-    st.session_state["partner_open_publish_workspace"] = True
+    st.session_state["partner_workspace_tab"] = "Publish"
 
 
 def select_window_media_target(
@@ -5093,15 +5093,14 @@ def main() -> None:
     if not ffmpeg_ok:
         st.warning("FFmpeg is currently unavailable. Upload, preview, and transcription will still work, but final video export requires repairing FFmpeg.")
 
-    publish_requested = bool(
-        st.session_state.pop("partner_open_publish_workspace", False)
-    )
+    st.session_state.pop("partner_open_publish_workspace", None)
     workspace_tabs = st.tabs(
         [
             "Editor",
             "Publish",
         ],
-        default="Publish" if publish_requested else None,
+        key="partner_workspace_tab",
+        on_change="rerun",
     )
 
     with workspace_tabs[0]:
@@ -6061,7 +6060,8 @@ def main() -> None:
         )
         selected_slots = list(selected_template_config["slots"])
         st.session_state.setdefault("partner_canvas_active_trim_target", "source")
-        # Fixed templates always preserve the complete frame in every window.
+        # Default to showing the complete media; each occupied window can opt
+        # into edge-to-edge cropping with Fill frame.
         template_fit_modes = {
             str(slot_number): "contain"
             for slot_number in range(1, len(selected_slots) + 1)
@@ -6080,6 +6080,16 @@ def main() -> None:
                     st.caption("WINDOW 1 · LEFT")
                     st.markdown("**Primary video**")
                     st.caption(source_path.name)
+                    primary_fit_label = st.segmented_control(
+                        "Window 1 fit",
+                        ["Fit full video", "Fill frame"],
+                        default="Fit full video",
+                        key=f"partner_window_fit_{selected_template_label}_1",
+                        label_visibility="collapsed",
+                    )
+                    template_fit_modes["1"] = (
+                        "cover" if primary_fit_label == "Fill frame" else "contain"
+                    )
 
                 for slot_number in range(2, len(selected_slots) + 1):
                     slot_key = str(slot_number)
@@ -6100,6 +6110,21 @@ def main() -> None:
                                 f"{'s' if len(slot_items) != 1 else ''}**"
                             )
                             st.caption(" · ".join(item_names[:2]))
+                            slot_fit_label = st.segmented_control(
+                                f"Window {slot_number} fit",
+                                ["Fit full video", "Fill frame"],
+                                default="Fit full video",
+                                key=(
+                                    f"partner_window_fit_{selected_template_label}_"
+                                    f"{slot_number}"
+                                ),
+                                label_visibility="collapsed",
+                            )
+                            template_fit_modes[slot_key] = (
+                                "cover"
+                                if slot_fit_label == "Fill frame"
+                                else "contain"
+                            )
                             for slot_item in slot_items:
                                 if slot_item.get("media_type") == "video":
                                     # Secondary window audio is intentionally

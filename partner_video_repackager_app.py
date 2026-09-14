@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.14.24"
+APP_BUILD_ID = "Editor-2026.09.14.25"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -248,7 +248,18 @@ def choose_window_template(template_label: str) -> None:
     """Apply a template in one click and discard geometry from the old frame."""
     if template_label not in WINDOW_TEMPLATES:
         return
+    previous_template = str(
+        st.session_state.get("partner_window_template") or "One window"
+    )
     st.session_state["partner_window_template"] = template_label
+    if previous_template != template_label:
+        # A completed render belongs to the composition that produced it. Do
+        # not present or recover that file after the window layout changes.
+        st.session_state.pop("partner_latest_export", None)
+        st.session_state.pop("partner_latest_preview", None)
+        st.session_state.pop("partner_latest_export_message", None)
+        st.session_state.pop("partner_latest_export_template", None)
+        st.session_state["partner_render_needs_refresh"] = True
     st.session_state["partner_canvas_active_trim_target"] = "source"
     st.session_state.pop("partner_window_media_target", None)
     st.session_state.pop("partner_window_media_action", None)
@@ -6504,6 +6515,20 @@ def main() -> None:
         # their data is assembled later in this run.
         media_branding_slot = st.container()
         slug_controls_slot = st.container()
+        latest_render_template = str(
+            st.session_state.get("partner_latest_export_template") or ""
+        )
+        if (
+            st.session_state.get("partner_latest_export")
+            and latest_render_template != selected_template_label
+        ):
+            # This also migrates sessions whose preview predates template
+            # tracking, so a stale one-window render cannot survive a reload.
+            st.session_state.pop("partner_latest_export", None)
+            st.session_state.pop("partner_latest_preview", None)
+            st.session_state.pop("partner_latest_export_message", None)
+            st.session_state.pop("partner_latest_export_template", None)
+            st.session_state["partner_render_needs_refresh"] = True
         latest_editor_preview = Path(
             str(st.session_state.get("partner_latest_preview") or "")
         )
@@ -9174,6 +9199,10 @@ def main() -> None:
                 st.session_state["partner_latest_export"] = str(output)
                 st.session_state["partner_latest_preview"] = str(output)
                 st.session_state["partner_latest_export_message"] = message
+                st.session_state["partner_latest_export_template"] = (
+                    selected_template_label
+                )
+                st.session_state["partner_render_needs_refresh"] = False
                 with st.spinner("Preparing the browser preview..."):
                     preview_path, preview_message = build_browser_preview(output)
                 st.session_state["partner_latest_preview"] = str(
@@ -9188,7 +9217,10 @@ def main() -> None:
             else:
                 st.error(message)
 
-        if not st.session_state.get("partner_latest_export"):
+        if (
+            not st.session_state.get("partner_latest_export")
+            and not st.session_state.get("partner_render_needs_refresh", False)
+        ):
             previous_exports = sorted(
                 EXPORT_DIR.glob(f"{source_path.stem}_ai_anchor_horizontal*.mp4"),
                 key=lambda path: path.stat().st_mtime_ns,

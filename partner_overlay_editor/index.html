@@ -553,6 +553,25 @@
       : "▶ Play video preview";
     const current = () => layout.find(item => String(item.id) === String(selectedId));
     const imageFor = id => args.images.find(image => String(image.id) === String(id));
+    const spatialBoundsFor = image => {
+      const raw = image?.spatial_bounds || {};
+      const x = clamp(Number(raw.x) || 0, 0, .99);
+      const y = clamp(Number(raw.y) || 0, 0, .99);
+      const w = clamp(Number(raw.w) || (1 - x), .01, 1 - x);
+      const h = clamp(Number(raw.h) || (1 - y), .01, 1 - y);
+      return {x, y, w, h, right:x + w, bottom:y + h};
+    };
+    const constrainToSpatialBounds = (item, image = imageFor(item?.id)) => {
+      if (!item) return item;
+      const bounds = spatialBoundsFor(image);
+      const minimumWidth = Math.min(.08, bounds.w);
+      const minimumHeight = Math.min(.08, bounds.h);
+      item.w = clamp(Number(item.w) || bounds.w, minimumWidth, bounds.w);
+      item.h = clamp(Number(item.h) || bounds.h, minimumHeight, bounds.h);
+      item.x = clamp(Number(item.x) || bounds.x, bounds.x, bounds.right - item.w);
+      item.y = clamp(Number(item.y) || bounds.y, bounds.y, bounds.bottom - item.h);
+      return item;
+    };
     const overlaps = (first, second) => {
       if (!first || !second) return false;
       const epsilon = .001;
@@ -698,6 +717,7 @@
         h: height,
         z: index + 1
       }));
+      items.forEach(item => constrainToSpatialBounds(item, imageFor(item.id)));
     }
 
     function normaliseIncoming(images, incoming) {
@@ -732,6 +752,7 @@
           item.h = clamp(item.w / normalisedRatio, .08, 1 - item.y);
           item.w = clamp(item.h * normalisedRatio, .08, 1 - item.x);
         }
+        constrainToSpatialBounds(item, image);
         return item;
       });
     }
@@ -772,7 +793,8 @@
       const image=item ? imageFor(item.id) : null;
       const positionLocked=Boolean(image?.position_locked || image?.decorative);
       [inspectX,inspectY,inspectW,inspectH].forEach(input=>input.disabled=!item || positionLocked);
-      ["bringForward","bringFront","sendBackward","sendBack"].forEach(id=>document.getElementById(id).disabled=!item || positionLocked);
+      const layerOrderLocked=Boolean(positionLocked || image?.layer_order_locked);
+      ["bringForward","bringFront","sendBackward","sendBack"].forEach(id=>document.getElementById(id).disabled=!item || layerOrderLocked);
       if(!item) return;
       inspectX.value=(item.x*100).toFixed(1); inspectY.value=(item.y*100).toFixed(1);
       inspectW.value=(item.w*100).toFixed(1); inspectH.value=(item.h*100).toFixed(1);
@@ -1252,41 +1274,46 @@
     window.addEventListener("pointermove", event => {
       if (spatialAction && event.pointerId === spatialAction.pointerId) {
         const a = spatialAction, dx = (event.clientX-a.startX)/a.stageW, dy = (event.clientY-a.startY)/a.stageH;
+        const media = imageFor(a.item.id);
+        const bounds = spatialBoundsFor(media);
         if (a.mode === "move") {
-          a.item.x = clamp(a.x+dx,0,1-a.item.w); a.item.y = clamp(a.y+dy,0,1-a.item.h);
+          a.item.x = clamp(a.x+dx,bounds.x,bounds.right-a.item.w);
+          a.item.y = clamp(a.y+dy,bounds.y,bounds.bottom-a.item.h);
         } else {
-          const minSize = .08;
-          if (a.mode.includes("e")) a.item.w = clamp(a.w+dx,minSize,1-a.x);
-          if (a.mode.includes("s")) a.item.h = clamp(a.h+dy,minSize,1-a.y);
+          const minWidth = Math.min(.08, bounds.w);
+          const minHeight = Math.min(.08, bounds.h);
+          if (a.mode.includes("e")) a.item.w = clamp(a.w+dx,minWidth,bounds.right-a.x);
+          if (a.mode.includes("s")) a.item.h = clamp(a.h+dy,minHeight,bounds.bottom-a.y);
           if (a.mode.includes("w")) {
-            const right = a.x+a.w; a.item.x = clamp(a.x+dx,0,right-minSize); a.item.w = right-a.item.x;
+            const right = a.x+a.w; a.item.x = clamp(a.x+dx,bounds.x,right-minWidth); a.item.w = right-a.item.x;
           }
           if (a.mode.includes("n")) {
-            const bottom = a.y+a.h; a.item.y = clamp(a.y+dy,0,bottom-minSize); a.item.h = bottom-a.item.y;
+            const bottom = a.y+a.h; a.item.y = clamp(a.y+dy,bounds.y,bottom-minHeight); a.item.h = bottom-a.item.y;
           }
-          const media = imageFor(a.item.id);
           if (media?.lock_aspect) {
             const mediaAspect = Math.max(.1, Number(media.aspect_ratio) || (16 / 9));
             const normalisedRatio = mediaAspect / (16 / 9);
             if ((a.mode.includes("n") || a.mode.includes("s")) && !a.mode.includes("e") && !a.mode.includes("w")) {
               const centerX = a.item.x + a.item.w / 2;
-              a.item.w = clamp(a.item.h * normalisedRatio, minSize, 1);
-              a.item.x = clamp(centerX - a.item.w / 2, 0, 1 - a.item.w);
+              a.item.w = clamp(a.item.h * normalisedRatio, minWidth, bounds.w);
+              a.item.x = clamp(centerX - a.item.w / 2, bounds.x, bounds.right - a.item.w);
             } else {
               const bottom = a.item.y + a.item.h;
-              a.item.h = clamp(a.item.w / normalisedRatio, minSize, 1);
+              a.item.h = clamp(a.item.w / normalisedRatio, minHeight, bounds.h);
               a.item.y = a.mode.includes("n")
-                ? clamp(bottom - a.item.h, 0, 1 - a.item.h)
-                : clamp(a.item.y, 0, 1 - a.item.h);
+                ? clamp(bottom - a.item.h, bounds.y, bounds.bottom - a.item.h)
+                : clamp(a.item.y, bounds.y, bounds.bottom - a.item.h);
             }
           }
         }
         const snap=.008;
-        if(Math.abs(a.item.x)<snap)a.item.x=0; if(Math.abs(a.item.y)<snap)a.item.y=0;
-        if(Math.abs((a.item.x+a.item.w)-1)<snap)a.item.w=1-a.item.x;
-        if(Math.abs((a.item.y+a.item.h)-1)<snap)a.item.h=1-a.item.y;
-        if(Math.abs((a.item.x+a.item.w/2)-.5)<snap)a.item.x=.5-a.item.w/2;
-        if(Math.abs((a.item.y+a.item.h/2)-.5)<snap)a.item.y=.5-a.item.h/2;
+        if(Math.abs(a.item.x-bounds.x)<snap)a.item.x=bounds.x;
+        if(Math.abs(a.item.y-bounds.y)<snap)a.item.y=bounds.y;
+        if(Math.abs((a.item.x+a.item.w)-bounds.right)<snap)a.item.w=bounds.right-a.item.x;
+        if(Math.abs((a.item.y+a.item.h)-bounds.bottom)<snap)a.item.h=bounds.bottom-a.item.y;
+        if(Math.abs((a.item.x+a.item.w/2)-(bounds.x+bounds.w/2))<snap)a.item.x=bounds.x+(bounds.w-a.item.w)/2;
+        if(Math.abs((a.item.y+a.item.h/2)-(bounds.y+bounds.h/2))<snap)a.item.y=bounds.y+(bounds.h-a.item.h)/2;
+        constrainToSpatialBounds(a.item, media);
         Object.assign(a.tile.style,{left:`${a.item.x*100}%`,top:`${a.item.y*100}%`,width:`${a.item.w*100}%`,height:`${a.item.h*100}%`,zIndex:a.item.z});
       }
       if (timingAction && event.pointerId === timingAction.pointerId) {
@@ -1319,15 +1346,25 @@
     startInput.addEventListener("change", updateFromInputs);
     durationInput.addEventListener("change", updateFromInputs);
 
-    function updateGeometryFromInspector(){const item=current();if(!item)return;remember();item.x=clamp(Number(inspectX.value)/100,0,1-item.w);item.y=clamp(Number(inspectY.value)/100,0,1-item.h);item.w=clamp(Number(inspectW.value)/100,.08,1-item.x);item.h=clamp(Number(inspectH.value)/100,.08,1-item.y);renderAll();setDirty();}
+    function updateGeometryFromInspector(){
+      const item=current();if(!item)return;
+      const image=imageFor(item.id);if(image?.position_locked||image?.decorative)return;
+      const bounds=spatialBoundsFor(image);
+      remember();
+      item.w=clamp(Number(inspectW.value)/100,Math.min(.08,bounds.w),bounds.w);
+      item.h=clamp(Number(inspectH.value)/100,Math.min(.08,bounds.h),bounds.h);
+      item.x=clamp(Number(inspectX.value)/100,bounds.x,bounds.right-item.w);
+      item.y=clamp(Number(inspectY.value)/100,bounds.y,bounds.bottom-item.h);
+      constrainToSpatialBounds(item,image);renderAll();setDirty();
+    }
     [inspectX,inspectY,inspectW,inspectH].forEach(input=>input.addEventListener("change",updateGeometryFromInspector));
     function applyAlign(change){const item=current();if(!item)return;remember();change(item);renderAll();setDirty();}
-    document.getElementById("alignLeft").onclick=()=>applyAlign(i=>i.x=0);
-    document.getElementById("alignCenter").onclick=()=>applyAlign(i=>i.x=(1-i.w)/2);
-    document.getElementById("alignTop").onclick=()=>applyAlign(i=>i.y=0);
-    document.getElementById("alignMiddle").onclick=()=>applyAlign(i=>i.y=(1-i.h)/2);
-    document.getElementById("fillWidth").onclick=()=>applyAlign(i=>{i.x=0;i.w=1});
-    document.getElementById("fillHeight").onclick=()=>applyAlign(i=>{i.y=0;i.h=1});
+    document.getElementById("alignLeft").onclick=()=>applyAlign(i=>{const b=spatialBoundsFor(imageFor(i.id));i.x=b.x});
+    document.getElementById("alignCenter").onclick=()=>applyAlign(i=>{const b=spatialBoundsFor(imageFor(i.id));i.x=b.x+(b.w-i.w)/2});
+    document.getElementById("alignTop").onclick=()=>applyAlign(i=>{const b=spatialBoundsFor(imageFor(i.id));i.y=b.y});
+    document.getElementById("alignMiddle").onclick=()=>applyAlign(i=>{const b=spatialBoundsFor(imageFor(i.id));i.y=b.y+(b.h-i.h)/2});
+    document.getElementById("fillWidth").onclick=()=>applyAlign(i=>{const b=spatialBoundsFor(imageFor(i.id));i.x=b.x;i.w=b.w});
+    document.getElementById("fillHeight").onclick=()=>applyAlign(i=>{const b=spatialBoundsFor(imageFor(i.id));i.y=b.y;i.h=b.h});
     function reorderLayer(mode) {
       const item=current(); if(!item)return;
       remember();
@@ -1365,14 +1402,15 @@
     };
     function setZoom(value){zoom=clamp(value,.5,1.75);canvasFrame.style.width=`${zoom*100}%`;document.getElementById("zoomLabel").textContent=`${Math.round(zoom*100)}%`;setHeight();}
     document.getElementById("zoomOut").onclick=()=>setZoom(zoom-.1); document.getElementById("zoomIn").onclick=()=>setZoom(zoom+.1); document.getElementById("zoomLabel").onclick=()=>setZoom(1);
-    window.addEventListener("keydown",event=>{const item=current();if(!item||!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key))return;event.preventDefault();remember();const step=(event.shiftKey?10:1)/1920;if(event.key==="ArrowLeft")item.x=clamp(item.x-step,0,1-item.w);if(event.key==="ArrowRight")item.x=clamp(item.x+step,0,1-item.w);if(event.key==="ArrowUp")item.y=clamp(item.y-step,0,1-item.h);if(event.key==="ArrowDown")item.y=clamp(item.y+step,0,1-item.h);renderAll();setDirty();});
+    window.addEventListener("keydown",event=>{const item=current();const image=item?imageFor(item.id):null;if(!item||image?.position_locked||image?.decorative||!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key))return;event.preventDefault();remember();const b=spatialBoundsFor(image);const step=(event.shiftKey?10:1)/1920;if(event.key==="ArrowLeft")item.x=clamp(item.x-step,b.x,b.right-item.w);if(event.key==="ArrowRight")item.x=clamp(item.x+step,b.x,b.right-item.w);if(event.key==="ArrowUp")item.y=clamp(item.y-step,b.y,b.bottom-item.h);if(event.key==="ArrowDown")item.y=clamp(item.y+step,b.y,b.bottom-item.h);renderAll();setDirty();});
 
     document.querySelectorAll("[data-cols]").forEach(button => button.addEventListener("click", () => {
       positionItems(visibleLayout(), Number(button.dataset.cols)); renderAll(); setDirty();
     }));
     document.getElementById("fullFrame").addEventListener("click", () => {
       const item=current(); if(!item) return;
-      Object.assign(item,{x:0,y:0,w:1,h:1,z:Math.max(...layout.map(value=>value.z),0)+1});
+      const bounds=spatialBoundsFor(imageFor(item.id));
+      Object.assign(item,{x:bounds.x,y:bounds.y,w:bounds.w,h:bounds.h,z:Math.max(...layout.map(value=>value.z),0)+1});
       renderAll(); setDirty();
     });
     document.getElementById("resetLayout").addEventListener("click", () => {

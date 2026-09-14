@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.14.21"
+APP_BUILD_ID = "Editor-2026.09.14.22"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -210,6 +210,31 @@ def _normalised_box(box: Tuple[int, int, int, int]) -> Dict[str, float]:
         "w": (right - left) / OUTPUT_WIDTH,
         "h": (bottom - top) / OUTPUT_HEIGHT,
     }
+
+
+def _box_within_container(
+    candidate: Dict[str, object], container: Dict[str, float]
+) -> Dict[str, float]:
+    """Clamp canvas geometry so every edge remains inside its template slot."""
+    container_x = float(container["x"])
+    container_y = float(container["y"])
+    container_w = float(container["w"])
+    container_h = float(container["h"])
+    minimum_w = min(0.08, container_w)
+    minimum_h = min(0.08, container_h)
+    width = max(minimum_w, min(float(candidate.get("w") or container_w), container_w))
+    height = max(
+        minimum_h, min(float(candidate.get("h") or container_h), container_h)
+    )
+    x = max(
+        container_x,
+        min(float(candidate.get("x") or container_x), container_x + container_w - width),
+    )
+    y = max(
+        container_y,
+        min(float(candidate.get("y") or container_y), container_y + container_h - height),
+    )
+    return {"x": x, "y": y, "w": width, "h": height}
 
 
 def selected_window_template() -> Tuple[str, Dict[str, object]]:
@@ -431,7 +456,7 @@ SLUG_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 overlay_layout_editor = components.declare_component(
-    "partner_overlay_timeline_editor_v9",
+    "partner_overlay_timeline_editor_v10",
     path=str(OVERLAY_EDITOR_DIR),
 )
 
@@ -6888,10 +6913,7 @@ def main() -> None:
         fixed_geometry_by_id = {
             str(item["id"]): item
             for item in default_canvas_layout
-            if (
-                str(item["id"]).startswith("window_")
-                or str(item["id"]) == "source"
-            )
+            if str(item["id"]) in {"source", "window_template_frame"}
         }
         for canvas_item in current_canvas_layout:
             fixed_item = fixed_geometry_by_id.get(str(canvas_item.get("id")))
@@ -7013,7 +7035,11 @@ def main() -> None:
                             else first_slot_item.get("duration") or editor_video_duration
                         ),
                         "timing_locked": True,
-                        "position_locked": True,
+                        "position_locked": False,
+                        "layer_order_locked": True,
+                        "spatial_bounds": window_slot_boxes[
+                            int(slot_id.rsplit("_", 1)[-1]) - 1
+                        ],
                         "fit_mode": str(
                             template_fit_modes.get(
                                 slot_id.rsplit("_", 1)[-1], "contain"
@@ -7915,7 +7941,10 @@ def main() -> None:
         # Schedule every fixed-window playlist across the complete edited video.
         for slot_id, slot_items in active_fixed_slot_items.items():
             slot_number = int(slot_id.rsplit("_", 1)[-1])
-            slot_geometry = window_slot_boxes[slot_number - 1]
+            slot_container = window_slot_boxes[slot_number - 1]
+            slot_geometry = _box_within_container(
+                template_geometry.get(slot_id, slot_container), slot_container
+            )
             slot_cursor = 0.0
             slot_item_index = 0
             while slot_cursor < template_duration - 0.01 and slot_items:
@@ -8762,6 +8791,18 @@ def main() -> None:
                 for item in result_items
                 if not str(item.get("id")).startswith("slug:")
             ]
+            for template_item in template_items:
+                template_item_id = str(template_item.get("id") or "")
+                if not template_item_id.startswith("window_slot_"):
+                    continue
+                try:
+                    slot_number = int(template_item_id.rsplit("_", 1)[-1])
+                    slot_container = window_slot_boxes[slot_number - 1]
+                except (IndexError, ValueError):
+                    continue
+                template_item.update(
+                    _box_within_container(template_item, slot_container)
+                )
             if template_items:
                 st.session_state["partner_template_canvas_layout"] = template_items
 
@@ -8786,6 +8827,8 @@ def main() -> None:
                 geometry_id = overlay_geometry_ids.get(overlay_id)
                 if overlay_id.startswith("template-loop-"):
                     geometry_id = "images"
+                elif overlay_id.startswith("window_slot_"):
+                    geometry_id = overlay_id.split(":", 1)[0]
                 updated_geometry = latest_template_geometry.get(
                     str(geometry_id or "")
                 )

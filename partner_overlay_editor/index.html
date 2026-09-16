@@ -1520,6 +1520,26 @@
       return editedTimeToSourcePosition(editedTime).time;
     }
 
+    function editedRangeToSourceRanges(start, end) {
+      const selectionStart = Math.max(0, Number(start) || 0);
+      const selectionEnd = Math.max(selectionStart, Number(end) || 0);
+      const mapped = [];
+      let editedCursor = 0;
+      sourcePlaybackRanges().forEach(range => {
+        const rangeDuration = Math.max(0, range.end - range.start);
+        const overlapStart = Math.max(selectionStart, editedCursor);
+        const overlapEnd = Math.min(selectionEnd, editedCursor + rangeDuration);
+        if (overlapEnd - overlapStart >= .05) {
+          mapped.push({
+            start: range.start + overlapStart - editedCursor,
+            end: range.start + overlapEnd - editedCursor
+          });
+        }
+        editedCursor += rangeDuration;
+      });
+      return mapped;
+    }
+
     function sourceCutEvent(action) {
       return `${Date.now()}:${action}:${Math.random()}`;
     }
@@ -1541,6 +1561,22 @@
     const trimTargetDuration = () => activeTrimTargetId === "source"
       ? sourceDuration()
       : Math.max(.1, Number(activeSecondaryTrim()?.duration) || .1);
+    const usesEditedTrimCoordinates = () => (
+      activeTrimTargetId === "source" && activeTrimMode() === "remove"
+    );
+    const trimSelectionDuration = () => usesEditedTrimCoordinates()
+      ? editedSourceDuration()
+      : trimTargetDuration();
+
+    function candidateActiveTrimRanges() {
+      const selectedRanges = usesEditedTrimCoordinates()
+        ? editedRangeToSourceRanges(sourceCutSelectionStart, sourceCutSelectionEnd)
+        : [{start: sourceCutSelectionStart, end: sourceCutSelectionEnd}];
+      return mergeSourceCuts(
+        [...activeTrimRanges(), ...selectedRanges],
+        trimTargetDuration()
+      );
+    }
 
     function validSourceCuts(cuts) {
       const removed = mergeSourceCuts(cuts, trimTargetDuration()).reduce(
@@ -1574,13 +1610,15 @@
       sourceCutHelp.textContent = message || (
         activeTrimMode() === "keep"
           ? `Drag across the bar to keep sections from ${activeTrimName()}. Multiple sections are joined in chronological order.`
+          : usesEditedTrimCoordinates()
+          ? "Drag across the bar to remove what you currently see. Earlier cuts are already excluded, so repeated editing stays accurate."
           : `Drag across the bar to remove unwanted parts from ${activeTrimName()}.`
       );
       sourceCutHelp.classList.toggle("source-cut-error", Boolean(isError));
     }
 
     function setSourceCutSelection(start, end, seek = false) {
-      const limit = trimTargetDuration();
+      const limit = trimSelectionDuration();
       let nextStart = clamp(Number(start) || 0, 0, Math.max(0, limit - .1));
       let nextEnd = clamp(Number(end) || 0, .1, limit);
       if (nextEnd < nextStart) [nextStart, nextEnd] = [nextEnd, nextStart];
@@ -1593,7 +1631,7 @@
     }
 
     function renderSourceCutSelection() {
-      const limit = trimTargetDuration();
+      const limit = trimSelectionDuration();
       sourceCutSelectionStart = clamp(sourceCutSelectionStart, 0, Math.max(0, limit - .1));
       sourceCutSelectionEnd = clamp(sourceCutSelectionEnd, .1, limit);
       if (sourceCutSelectionEnd - sourceCutSelectionStart < .1) {
@@ -1606,10 +1644,7 @@
       sourceCutValue.textContent = `${formatTime(sourceCutSelectionStart)}–${formatTime(sourceCutSelectionEnd)} · ${(sourceCutSelectionEnd - sourceCutSelectionStart).toFixed(1)}s`;
       sourceCutSelection.style.left = `${sourceCutSelectionStart / limit * 100}%`;
       sourceCutSelection.style.width = `${Math.max(.4, (sourceCutSelectionEnd - sourceCutSelectionStart) / limit * 100)}%`;
-      const candidate = mergeSourceCuts([
-        ...activeTrimRanges(),
-        {start: sourceCutSelectionStart, end: sourceCutSelectionEnd}
-      ], limit);
+      const candidate = candidateActiveTrimRanges();
       removeSourceSelection.disabled = (
         sourceCutSelectionEnd - sourceCutSelectionStart < .1 ||
         (activeTrimMode() === "remove" && !validSourceCuts(candidate))
@@ -1624,14 +1659,18 @@
       document.getElementById("keepTrimMode").classList.toggle("active", keepMode);
       sourceCutTitle.textContent = keepMode
         ? `Keep sections from ${activeTrimName()}`
+        : usesEditedTrimCoordinates()
+        ? "Remove a section from the current edit"
         : `Remove a section from ${activeTrimName()}`;
       removeSourceSelection.textContent = keepMode
         ? "✓ Keep selected area"
         : "✂ Remove selected area";
-      removedCutHeading.textContent = keepMode ? "KEPT AREAS" : "REMOVED AREAS";
+      removedCutHeading.textContent = keepMode
+        ? "KEPT AREAS"
+        : "REMOVED AREAS · ORIGINAL VIDEO TIME";
       renderSourceCutSelection();
       sourceCutTrack.querySelectorAll(".source-cut-existing").forEach(node => node.remove());
-      displayedTrimRanges.forEach(cut => {
+      (usesEditedTrimCoordinates() ? [] : displayedTrimRanges).forEach(cut => {
         const marker = document.createElement("span");
         marker.className = "source-cut-existing";
         marker.classList.toggle("keep", keepMode);
@@ -1682,12 +1721,18 @@
 
     function sourceCutTimeFromPointer(event) {
       const rect = sourceCutTrack.getBoundingClientRect();
-      return clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * trimTargetDuration();
+      return clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1) * trimSelectionDuration();
     }
 
     function seekTrimPreview(value) {
-      const targetTime = clamp(Number(value) || 0, 0, trimTargetDuration());
-      if (activeTrimTargetId === "source") sourcePlayhead = targetTime;
+      const selectionTime = clamp(Number(value) || 0, 0, trimSelectionDuration());
+      const targetTime = usesEditedTrimCoordinates()
+        ? editedTimeToSourceTime(selectionTime)
+        : selectionTime;
+      if (activeTrimTargetId === "source") {
+        sourcePlayhead = targetTime;
+        if (usesEditedTrimCoordinates()) editedPlayhead = selectionTime;
+      }
       const targetTile = stage.querySelector(
         `.tile[data-id="${CSS.escape(String(activeTrimTargetId))}"]`
       );
@@ -1701,8 +1746,9 @@
         } catch (_) {}
       }
       sourceTime.textContent = (
-        `${activeTrimName()} · ${formatTime(targetTime)} / `
-        + `${formatTime(trimTargetDuration())}`
+        usesEditedTrimCoordinates()
+          ? `Current edit · ${formatTime(selectionTime)} / ${formatTime(trimSelectionDuration())} · source ${formatTime(targetTime)}`
+          : `${activeTrimName()} · ${formatTime(targetTime)} / ${formatTime(trimTargetDuration())}`
       );
     }
 
@@ -1730,8 +1776,9 @@
       event.preventDefault();
       const rect = sourceCutTrack.getBoundingClientRect();
       const pointerTime = sourceCutTimeFromPointer(event);
-      const startX = rect.left + sourceCutSelectionStart / trimTargetDuration() * rect.width;
-      const endX = rect.left + sourceCutSelectionEnd / trimTargetDuration() * rect.width;
+      const selectionDuration = trimSelectionDuration();
+      const startX = rect.left + sourceCutSelectionStart / selectionDuration * rect.width;
+      const endX = rect.left + sourceCutSelectionEnd / selectionDuration * rect.width;
       const handleRadius = Math.max(12, Math.min(22, rect.width * .025));
       let mode = "new";
       if (Math.abs(event.clientX - startX) <= handleRadius) mode = "start";
@@ -1746,7 +1793,7 @@
       };
       sourceCutTrack.setPointerCapture(event.pointerId);
       if (mode === "new") {
-        setSourceCutSelection(pointerTime, Math.min(trimTargetDuration(), pointerTime + .1), true);
+        setSourceCutSelection(pointerTime, Math.min(selectionDuration, pointerTime + .1), true);
       } else {
         seekTrimPreview(pointerTime);
       }
@@ -1761,7 +1808,7 @@
       } else if (drag.mode === "move") {
         const width = drag.initialEnd - drag.initialStart;
         const requestedStart = drag.initialStart + currentTime - drag.anchor;
-        const nextStart = clamp(requestedStart, 0, trimTargetDuration() - width);
+        const nextStart = clamp(requestedStart, 0, trimSelectionDuration() - width);
         setSourceCutSelection(nextStart, nextStart + width, false);
       } else {
         setSourceCutSelection(
@@ -1794,7 +1841,7 @@
     sourceCutTrack.addEventListener("pointerup", finishSourceCutDrag);
     sourceCutTrack.addEventListener("pointercancel", finishSourceCutDrag);
     sourceCutStart.addEventListener("change", () => {
-      const limit = trimTargetDuration();
+      const limit = trimSelectionDuration();
       const previousWidth = Math.max(
         .1,
         sourceCutSelectionEnd - sourceCutSelectionStart
@@ -1810,7 +1857,7 @@
       setSourceCutSelection(requestedStart, nextEnd, true);
     });
     sourceCutEnd.addEventListener("change", () => {
-      const limit = trimTargetDuration();
+      const limit = trimSelectionDuration();
       const previousWidth = Math.max(
         .1,
         sourceCutSelectionEnd - sourceCutSelectionStart
@@ -1826,10 +1873,7 @@
       setSourceCutSelection(nextStart, requestedEnd, false);
     });
     removeSourceSelection.addEventListener("click", () => {
-      const candidate = mergeSourceCuts([
-        ...activeTrimRanges(),
-        {start: sourceCutSelectionStart, end: sourceCutSelectionEnd}
-      ], trimTargetDuration());
+      const candidate = candidateActiveTrimRanges();
       if (activeTrimMode() === "remove" && !validSourceCuts(candidate)) {
         setSourceCutMessage("That selection would remove the complete selected video. Leave at least 0.1 seconds.", true);
         return;

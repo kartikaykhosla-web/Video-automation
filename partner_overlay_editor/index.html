@@ -657,7 +657,12 @@
         }));
       } catch (_) {}
     };
-    const commit = (deletedIds = [], deletionEvent = "", cutEvent = "") => {
+    const commit = (
+      deletedIds = [],
+      deletionEvent = "",
+      cutEvent = "",
+      trimOperation = null
+    ) => {
       if (cutEvent) trimRevision = Math.max(Date.now(), trimRevision + 1);
       const allDeletedIds = [...new Set([...pendingDeletedIds, ...deletedIds].map(String))];
       const items = serialisedLayout();
@@ -673,6 +678,7 @@
           trim_mode: trimMode,
           trim_revision: trimRevision,
           cut_event: cutEvent,
+          trim_operation: trimOperation,
           active_trim_target: activeTrimTargetId,
           secondary_trims: serialisedSecondaryTrims()
         },
@@ -1569,13 +1575,16 @@
       : trimTargetDuration();
 
     function candidateActiveTrimRanges() {
-      const selectedRanges = usesEditedTrimCoordinates()
-        ? editedRangeToSourceRanges(sourceCutSelectionStart, sourceCutSelectionEnd)
-        : [{start: sourceCutSelectionStart, end: sourceCutSelectionEnd}];
       return mergeSourceCuts(
-        [...activeTrimRanges(), ...selectedRanges],
+        [...activeTrimRanges(), ...selectedTrimRanges()],
         trimTargetDuration()
       );
+    }
+
+    function selectedTrimRanges() {
+      return usesEditedTrimCoordinates()
+        ? editedRangeToSourceRanges(sourceCutSelectionStart, sourceCutSelectionEnd)
+        : [{start: sourceCutSelectionStart, end: sourceCutSelectionEnd}];
     }
 
     function validSourceCuts(cuts) {
@@ -1873,6 +1882,7 @@
       setSourceCutSelection(nextStart, requestedEnd, false);
     });
     removeSourceSelection.addEventListener("click", () => {
+      const addedRanges = selectedTrimRanges();
       const candidate = candidateActiveTrimRanges();
       if (activeTrimMode() === "remove" && !validSourceCuts(candidate)) {
         setSourceCutMessage("That selection would remove the complete selected video. Leave at least 0.1 seconds.", true);
@@ -1885,7 +1895,12 @@
           : "Selected area removed from the original video."
       );
       renderSequence();
-      commit([], "", sourceCutEvent("add"));
+      commit([], "", sourceCutEvent("add"), {
+        action: "add",
+        target: activeTrimTargetId,
+        mode: activeTrimMode(),
+        ranges: serialisedCuts(addedRanges)
+      });
     });
     document.getElementById("removeTrimMode").addEventListener("click", () => {
       setActiveTrimMode("remove");

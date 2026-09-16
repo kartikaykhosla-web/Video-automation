@@ -1603,6 +1603,21 @@ def normalise_cut_ranges(
     return merged
 
 
+def merge_trim_addition(
+    existing: List[Tuple[float, float]],
+    addition: List[Tuple[float, float]],
+    source_duration: float,
+) -> List[Tuple[float, float]]:
+    """Idempotently add ranges to Streamlit's authoritative trim state."""
+    return normalise_cut_ranges(
+        [
+            {"start": float(start), "end": float(end)}
+            for start, end in [*existing, *addition]
+        ],
+        source_duration,
+    )
+
+
 def kept_source_ranges(
     cuts: List[Tuple[float, float]],
     source_duration: float,
@@ -8633,6 +8648,37 @@ def main() -> None:
                 if template_canvas_result.get("trim_mode") == "keep"
                 else "remove"
             )
+            trim_operation = template_canvas_result.get("trim_operation")
+            if (
+                isinstance(trim_operation, dict)
+                and trim_operation.get("action") == "add"
+                and trim_operation.get("target") == "source"
+                and trim_operation.get("mode") == canvas_trim_mode
+            ):
+                operation_ranges = normalise_cut_ranges(
+                    [
+                        item
+                        for item in trim_operation.get("ranges", [])
+                        if isinstance(item, dict)
+                    ],
+                    raw_video_duration,
+                )
+                if canvas_trim_mode == "remove":
+                    # Additions are transactional: merge the new operation
+                    # into Streamlit's authoritative list. This prevents a
+                    # slightly stale component snapshot from dropping the
+                    # fourth or any later removed section during a rerun.
+                    canvas_cut_ranges = merge_trim_addition(
+                        source_cuts_selected,
+                        operation_ranges,
+                        raw_video_duration,
+                    )
+                else:
+                    canvas_keep_ranges = merge_trim_addition(
+                        source_keeps_selected,
+                        operation_ranges,
+                        raw_video_duration,
+                    )
             incoming_trim_revision = int(
                 template_canvas_result.get("trim_revision") or 0
             )

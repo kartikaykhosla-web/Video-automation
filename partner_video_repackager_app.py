@@ -3194,7 +3194,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "geometry": geometry,
             "font_size": int(slug.get("font_size") or 80),
             "font_name": font_name,
-            "design_version": 11,
+            "design_version": 12,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3274,7 +3274,10 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
 
     text_left = accent_left + (18 if text_only else 58)
     text_right = right - (18 if text_only else 42)
-    text_top = top + (12 if text_only else 33)
+    # Centre the headline optically inside the banner. The previous 33px top
+    # inset made the available text box bottom-heavy, so even mathematically
+    # centred text appeared too low in short template-header slugs.
+    text_top = top + (12 if text_only else 18)
     if label and not text_only:
         label_font = _overlay_font(label, 27, font_name)
         label_bbox = draw.textbbox((0, 0), label, font=label_font)

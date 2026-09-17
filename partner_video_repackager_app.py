@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.17.2"
+APP_BUILD_ID = "Editor-2026.09.17.3"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -1102,7 +1102,7 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
     font_size = int(clamp_float(float(card.get("font_size") or 34), 12, 64))
     font_name = str(card.get("font_name") or DEFAULT_HINDI_SLUG_FONT)
     text_color = str(card.get("text_color") or "#FFFFFF")
-    payload = f"name-card-v8:{text_value}:{font_size}:{font_name}:{text_color}"
+    payload = f"name-card-v9:{text_value}:{font_size}:{font_name}:{text_color}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     output = OVERLAY_DIR / f"{source.stem}_name_card_{digest}.png"
     if output.exists():
@@ -1112,13 +1112,13 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
     draw = ImageDraw.Draw(image)
     font = _overlay_font(text_value, font_size, font_name)
     # Centre the visible glyphs rather than the font's baseline/line metrics.
-    # The visible black strip is centred one pixel above the configured text
-    # box. Match the actual artwork while preserving the left inset after the
-    # icon.
+    # Calibrated against the scaled canvas artwork: Mukta's visible glyph block
+    # otherwise lands about 3.5 screen pixels too low inside the black strip.
+    # Preserve the fixed left inset after the icon.
     text_bounds = draw.textbbox((0, 0), text_value, font=font)
     visible_height = text_bounds[3] - text_bounds[1]
     text_x = 12 - text_bounds[0]
-    text_y = (image.height - visible_height) / 2 - text_bounds[1] - 1
+    text_y = (image.height - visible_height) / 2 - text_bounds[1] - 8
     draw.text((text_x, text_y), text_value, font=font, fill=text_color)
     image.save(output, format="PNG", optimize=True)
     return output
@@ -3210,7 +3210,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "geometry": geometry,
             "font_size": int(slug.get("font_size") or 80),
             "font_name": font_name,
-            "design_version": 14,
+            "design_version": 16,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3371,10 +3371,10 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
 
     block_height = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
     # Text-only template slugs use the permanent yellow artwork as their full
-    # visual box. Its visible fill is centred two pixels below the configured
-    # text box, so use that artwork centre rather than a font-dependent offset.
+    # visual box. Calibrate to the rendered band: without this adjustment the
+    # visible glyph block lands about three screen pixels above its midpoint.
     template_art_offset = (
-        2
+        8
         if text_only and region in {"template_header", "fixed_template_strip"}
         else 0
     )

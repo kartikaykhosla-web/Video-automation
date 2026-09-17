@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.17.3"
+APP_BUILD_ID = "Editor-2026.09.17.4"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -3210,7 +3210,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "geometry": geometry,
             "font_size": int(slug.get("font_size") or 80),
             "font_name": font_name,
-            "design_version": 16,
+            "design_version": 17,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3371,10 +3371,10 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
 
     block_height = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
     # Text-only template slugs use the permanent yellow artwork as their full
-    # visual box. Calibrate to the rendered band: without this adjustment the
-    # visible glyph block lands about three screen pixels above its midpoint.
+    # visual box. This offset is calibrated to equalise the visible top and
+    # bottom margins in the scaled canvas and final render.
     template_art_offset = (
-        8
+        6
         if text_only and region in {"template_header", "fixed_template_strip"}
         else 0
     )

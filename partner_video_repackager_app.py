@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.17.4"
+APP_BUILD_ID = "Editor-2026.09.17.5"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -3210,7 +3210,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "geometry": geometry,
             "font_size": int(slug.get("font_size") or 80),
             "font_name": font_name,
-            "design_version": 17,
+            "design_version": 18,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3371,13 +3371,12 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
 
     block_height = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
     # Text-only template slugs use the permanent yellow artwork as their full
-    # visual box. This offset is calibrated to equalise the visible top and
-    # bottom margins in the scaled canvas and final render.
-    template_art_offset = (
-        6
-        if text_only and region in {"template_header", "fixed_template_strip"}
-        else 0
-    )
+    # visual box. Start from the previously calibrated position, then move the
+    # slug upward by 15% of the band height as requested. Keeping this relative
+    # to panel height makes the adjustment consistent across fixed templates.
+    template_art_offset = 0
+    if text_only and region in {"template_header", "fixed_template_strip"}:
+        template_art_offset = 6 - int(round(panel_height * 0.15))
     y = (
         text_top
         + max(0, (bottom - text_top - block_height) / 2)

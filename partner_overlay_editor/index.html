@@ -48,6 +48,9 @@
     .tile:active { cursor: grabbing; }
     .tile.selected { border-color: #ff4b4b; box-shadow: 0 0 0 2px rgba(255,75,75,.3); }
     .tile.text-only-slug { background: transparent; box-shadow: none; }
+    .tile.template-copy, .tile.template-copy.selected {
+      border-color: transparent; border-radius: 0; box-shadow: none; cursor: default;
+    }
     .tile.contain-media { background: transparent; box-shadow: none; }
     .blur { display: none; }
     .sharp { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
@@ -990,7 +993,10 @@
           stage.appendChild(tile);
         }
         const containsMedia = String(image.fit_mode || "").startsWith("contain");
-        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${containsMedia ? " contain-media" : ""}${image.position_locked ? " position-locked" : ""}${image.decorative ? " decorative" : ""}`;
+        const isTemplateCopy = (
+          image.kind === "slug" || String(item.id).startsWith("template_name:")
+        );
+        tile.className = `tile${String(item.id) === String(selectedId) ? " selected" : ""}${image.text_only ? " text-only-slug" : ""}${isTemplateCopy ? " template-copy" : ""}${containsMedia ? " contain-media" : ""}${image.position_locked ? " position-locked" : ""}${image.decorative ? " decorative" : ""}`;
         tile.dataset.id = String(item.id);
         Object.assign(tile.style, {
           display: visibleIds.has(String(item.id)) ? "block" : "none",

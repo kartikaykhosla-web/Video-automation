@@ -1648,8 +1648,15 @@
       }
       sourceCutStart.max = String(Math.max(0, limit - .1));
       sourceCutEnd.max = String(limit);
-      sourceCutStart.value = sourceCutSelectionStart.toFixed(2);
-      sourceCutEnd.value = sourceCutSelectionEnd.toFixed(2);
+      // Streamlit can send render messages while a number field is focused.
+      // Never replace the user's in-progress first entry with the previous
+      // five-second selection; normalise it after change/blur instead.
+      if (document.activeElement !== sourceCutStart) {
+        sourceCutStart.value = sourceCutSelectionStart.toFixed(2);
+      }
+      if (document.activeElement !== sourceCutEnd) {
+        sourceCutEnd.value = sourceCutSelectionEnd.toFixed(2);
+      }
       sourceCutValue.textContent = `${formatTime(sourceCutSelectionStart)}–${formatTime(sourceCutSelectionEnd)} · ${(sourceCutSelectionEnd - sourceCutSelectionStart).toFixed(1)}s`;
       sourceCutSelection.style.left = `${sourceCutSelectionStart / limit * 100}%`;
       sourceCutSelection.style.width = `${Math.max(.4, (sourceCutSelectionEnd - sourceCutSelectionStart) / limit * 100)}%`;

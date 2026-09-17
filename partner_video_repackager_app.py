@@ -104,7 +104,7 @@ REUTERS_READ_SCOPE = (
 REUTERS_WRITE_SCOPE = (
     "https://api.thomsonreuters.com/auth/reutersconnect.contentapi.write"
 )
-APP_BUILD_ID = "Editor-2026.09.14.25"
+APP_BUILD_ID = "Editor-2026.09.17.1"
 NAME_PLATE_LEAD_SECONDS = 0.3
 
 PRODUCER_VOICE_PROFILES: Dict[str, Dict[str, object]] = {
@@ -1102,7 +1102,7 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
     font_size = int(clamp_float(float(card.get("font_size") or 34), 12, 64))
     font_name = str(card.get("font_name") or DEFAULT_HINDI_SLUG_FONT)
     text_color = str(card.get("text_color") or "#FFFFFF")
-    payload = f"name-card-v6:{text_value}:{font_size}:{font_name}:{text_color}"
+    payload = f"name-card-v7:{text_value}:{font_size}:{font_name}:{text_color}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     output = OVERLAY_DIR / f"{source.stem}_name_card_{digest}.png"
     if output.exists():
@@ -1111,13 +1111,14 @@ def build_template_name_asset(card: Dict[str, object], source: Path) -> Path:
     image = Image.new("RGBA", (450, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     font = _overlay_font(text_value, font_size, font_name)
-    # Centre the visible glyphs rather than the font's baseline/line metrics;
-    # Mukta otherwise looks bottom-heavy even with a middle anchor. Preserve
-    # the fixed left inset after the icon.
+    # Centre the visible glyphs rather than the font's baseline/line metrics.
+    # Mukta's lower strokes carry more visual weight, so place the rasterised
+    # glyph centre two pixels above the mathematical centre of the name bar.
+    # Preserve the fixed left inset after the icon.
     text_bounds = draw.textbbox((0, 0), text_value, font=font)
     visible_height = text_bounds[3] - text_bounds[1]
     text_x = 12 - text_bounds[0]
-    text_y = (image.height - visible_height) / 2 - text_bounds[1]
+    text_y = (image.height - visible_height) / 2 - text_bounds[1] - 2
     draw.text((text_x, text_y), text_value, font=font, fill=text_color)
     image.save(output, format="PNG", optimize=True)
     return output
@@ -3209,7 +3210,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
             "geometry": geometry,
             "font_size": int(slug.get("font_size") or 80),
             "font_name": font_name,
-            "design_version": 12,
+            "design_version": 13,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -3292,7 +3293,7 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
     # Centre the headline optically inside the banner. The previous 33px top
     # inset made the available text box bottom-heavy, so even mathematically
     # centred text appeared too low in short template-header slugs.
-    text_top = top + (12 if text_only else 18)
+    text_top = top if text_only else top + 18
     if label and not text_only:
         label_font = _overlay_font(label, 27, font_name)
         label_bbox = draw.textbbox((0, 0), label, font=label_font)
@@ -3369,7 +3370,10 @@ def build_slug_overlay_asset(slug: Dict[str, object], source: Path) -> Path:
         lines[-1][-1] = (last_word.rstrip("…") + "…", last_highlighted)
 
     block_height = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
-    y = text_top + max(0, (bottom - text_top - block_height) / 2) - sample_bbox[1]
+    # Text-only template slugs use the permanent yellow artwork as their full
+    # visual box, so centre against the entire box instead of a padded subset.
+    # A slight optical lift matches Mukta's heavier lower strokes.
+    y = text_top + max(0, (bottom - text_top - block_height) / 2) - sample_bbox[1] - 2
     space_width = draw.textlength(" ", font=font)
     for line in lines:
         line_width = sum(
@@ -3450,13 +3454,9 @@ def build_source_cut_cache(
     cut_cache_dir.mkdir(parents=True, exist_ok=True)
     output_path = cut_cache_dir / f"{source.stem}_cuts_{digest}.mp4"
     expected_duration = sum(end - start for start, end in keep_ranges)
-    if output_path.exists() and output_path.stat().st_size > 1_024:
-        cached_duration = probe_media_duration(output_path)
-        if abs(cached_duration - expected_duration) <= max(
-            0.25, expected_duration * 0.015
-        ):
-            return output_path, "Using the cached source-video cuts."
-        output_path.unlink(missing_ok=True)
+    # Always rebuild the edited source. Reusing a previous stitched file can
+    # surface an earlier edit when the user reopens the same raw video.
+    output_path.unlink(missing_ok=True)
 
     filter_parts: List[str] = []
     has_source_audio = media_has_audio(
@@ -4588,6 +4588,7 @@ def render_workspace_header() -> None:
 def main() -> None:
     st.set_page_config(page_title="Partner Video Repackager", layout="wide")
     ensure_dirs()
+    st.session_state.setdefault("partner_video_edit_session_id", uuid.uuid4().hex)
     ffmpeg_ok = media_tools_healthy()
     st.markdown(
         """
@@ -5294,6 +5295,9 @@ def main() -> None:
                                     download_newsroom_video(result)
                                 )
                             if imported_path:
+                                st.session_state["partner_video_edit_session_id"] = (
+                                    uuid.uuid4().hex
+                                )
                                 st.session_state["partner_video_path"] = str(
                                     imported_path
                                 )
@@ -5337,6 +5341,7 @@ def main() -> None:
         if uploaded:
             signature = f"{uploaded.name}:{uploaded.size}"
             if st.session_state.get("partner_video_signature") != signature:
+                st.session_state["partner_video_edit_session_id"] = uuid.uuid4().hex
                 source_path = save_upload(uploaded)
                 st.session_state["partner_video_path"] = str(source_path)
                 st.session_state["partner_video_signature"] = signature
@@ -8602,6 +8607,7 @@ def main() -> None:
                 ),
                 storage_key=(
                     "partner-template-canvas:"
+                    f"{st.session_state['partner_video_edit_session_id']}:"
                     f"{st.session_state.get('partner_video_signature', source_path.name)}:"
                     f"{selected_template_label}:"
                     f"{selected_property}:"
@@ -8705,6 +8711,14 @@ def main() -> None:
                 or is_newer_trim_revision
                 or legacy_trim_payload_changed
             ):
+                # Any trim changes the rendered pixels and duration. Hide the
+                # previously generated file immediately instead of presenting
+                # it as though it reflects the current edit.
+                st.session_state.pop("partner_latest_export", None)
+                st.session_state.pop("partner_latest_preview", None)
+                st.session_state.pop("partner_latest_export_message", None)
+                st.session_state.pop("partner_latest_export_template", None)
+                st.session_state["partner_render_needs_refresh"] = True
                 st.session_state["partner_last_canvas_cut_event"] = cut_event
                 st.session_state["partner_source_trim_revision"] = max(
                     incoming_trim_revision,
@@ -8787,11 +8801,25 @@ def main() -> None:
                     ],
                     target_duration,
                 )
+                previous_mode = str(target_item.get("trim_mode") or "keep")
+                previous_ranges = [
+                    (float(start), float(end))
+                    for start, end in target_item.get("ranges") or []
+                ]
                 target_item["trim_mode"] = target_mode
                 target_item["ranges"] = [
                     (float(start), float(end))
                     for start, end in normalised_ranges
                 ]
+                if (
+                    previous_mode != target_mode
+                    or previous_ranges != target_item["ranges"]
+                ):
+                    st.session_state.pop("partner_latest_export", None)
+                    st.session_state.pop("partner_latest_preview", None)
+                    st.session_state.pop("partner_latest_export_message", None)
+                    st.session_state.pop("partner_latest_export_template", None)
+                    st.session_state["partner_render_needs_refresh"] = True
 
             active_trim_target = str(
                 template_canvas_result.get("active_trim_target") or "source"
@@ -9265,26 +9293,6 @@ def main() -> None:
                 st.rerun()
             else:
                 st.error(message)
-
-        if (
-            not st.session_state.get("partner_latest_export")
-            and not st.session_state.get("partner_render_needs_refresh", False)
-        ):
-            previous_exports = sorted(
-                EXPORT_DIR.glob(f"{source_path.stem}_ai_anchor_horizontal*.mp4"),
-                key=lambda path: path.stat().st_mtime_ns,
-                reverse=True,
-            )
-            if previous_exports:
-                recovered_export = previous_exports[0]
-                recovered_preview, _ = build_browser_preview(recovered_export)
-                st.session_state["partner_latest_export"] = str(recovered_export)
-                st.session_state["partner_latest_preview"] = str(
-                    recovered_preview or recovered_export
-                )
-                st.session_state["partner_latest_export_message"] = (
-                    f"Latest generated video: {recovered_export.name}"
-                )
 
         latest_export_value = st.session_state.get("partner_latest_export")
         latest_preview_value = st.session_state.get("partner_latest_preview")
